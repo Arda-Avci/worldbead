@@ -1,0 +1,44 @@
+import type { PlanetId } from './types';
+
+export interface PlanetDef {
+  /** Diffuse/day texture, always present. */
+  map: string;
+  /** City-light night texture (Earth only). */
+  nightMap?: string;
+  /** Separate drifting cloud shell texture (Earth only; Venus is procedural). */
+  cloudsMap?: string;
+  /** Fresnel rim-glow atmosphere color. */
+  atmosphereColor: number;
+  /** Rim glow strength, 0 = effectively none (Moon). */
+  atmosphereIntensity: number;
+  /** Venus-style thick procedural cream cloud envelope. */
+  thickClouds?: boolean;
+}
+
+export const PLANET_DATA: Record<PlanetId, PlanetDef> = {
+  earth: {
+    map: 'textures/earth_daymap.jpg',
+    nightMap: 'textures/earth_nightmap.jpg',
+    cloudsMap: 'textures/earth_clouds.jpg',
+    atmosphereColor: 0x4da6ff,
+    atmosphereIntensity: 1.0,
+  },
+  moon: {
+    map: 'textures/moon.jpg',
+    atmosphereColor: 0x9aa4b2,
+    atmosphereIntensity: 0.08,
+  },
+  venus: {
+    map: 'textures/venus_surface.jpg',
+    atmosphereColor: 0xf2d9a0,
+    atmosphereIntensity: 1.1,
+    thickClouds: true,
+  },
+  mars: {
+    map: 'textures/mars.jpg',
+    atmosphereColor: 0xe08a5a,
+    atmosphereIntensity: 0.45,
+  },
+};
+
+export const PLANET_BODY_RADIUS = 0.97;

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>WorldBead UI demo</title>
+    <style>
+      html, body { margin: 0; padding: 0; background: #05070f; overflow: hidden; }
+      #stage {
+        position: fixed;
+        inset: 0;
+        background:
+          radial-gradient(1.5px 1.5px at 20% 30%, #ffffff 100%, transparent),
+          radial-gradient(1px 1px at 70% 65%, #ffffff 100%, transparent),
+          radial-gradient(1.5px 1.5px at 85% 20%, #ffffff 100%, transparent),
+          radial-gradient(1px 1px at 40% 80%, #ffffff 100%, transparent),
+          radial-gradient(1.5px 1.5px at 55% 45%, #ffffff 100%, transparent),
+          radial-gradient(1px 1px at 10% 60%, #ffffff 100%, transparent),
+          radial-gradient(1px 1px at 90% 85%, #ffffff 100%, transparent),
+          radial-gradient(1.5px 1.5px at 30% 10%, #ffffff 100%, transparent),
+          radial-gradient(ellipse at 50% 62%, #1c3a72 0%, #0a1530 45%, #05070f 78%);
+      }
+      #globe {
+        position: absolute;
+        left: 50%;
+        top: 56%;
+        width: 62vw;
+        max-width: 340px;
+        aspect-ratio: 1;
+        transform: translate(-50%, -50%);
+        border-radius: 50%;
+        background: radial-gradient(circle at 35% 30%, #6fb8ff 0%, #2c6fd6 38%, #0d2c66 72%, #051327 100%);
+        box-shadow: 0 0 80px rgba(90, 150, 255, 0.35), inset -20px -20px 60px rgba(0,0,0,0.5);
+      }
+      #ui-root { position: absolute; inset: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <div id="globe"></div>
+      <div id="ui-root"></div>
+    </div>
+    <script type="module" src="./demo.ts"></script>
+  </body>
+</html>

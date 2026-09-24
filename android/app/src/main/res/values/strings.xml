@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">WorldBead</string>
+    <string name="title_activity_main">WorldBead</string>
+    <string name="package_name">com.ardaavci.worldbead</string>
+    <string name="custom_url_scheme">com.ardaavci.worldbead</string>
+</resources>

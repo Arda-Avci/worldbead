@@ -1,0 +1,821 @@
+/* WorldBead — deep-space glass UI. Plain DOM + CSS, no framework. */
+
+:root {
+  --wb-bg-glass: rgba(12, 16, 32, 0.55);
+  --wb-bg-glass-strong: rgba(9, 12, 26, 0.78);
+  --wb-edge: rgba(255, 255, 255, 0.14);
+  --wb-edge-bright: rgba(255, 255, 255, 0.32);
+  --wb-text: #eef2ff;
+  --wb-text-dim: rgba(238, 242, 255, 0.62);
+  --wb-accent: #6ad2ff;
+  --wb-accent-2: #b98bff;
+  --wb-stardust: #ffd166;
+  --wb-danger: #ff6b6b;
+  --wb-good: #6bffb0;
+  --wb-radius-lg: 22px;
+  --wb-radius-md: 16px;
+  --wb-radius-sm: 12px;
+  --wb-safe-t: env(safe-area-inset-top, 0px);
+  --wb-safe-b: env(safe-area-inset-bottom, 0px);
+  --wb-safe-l: env(safe-area-inset-left, 0px);
+  --wb-safe-r: env(safe-area-inset-right, 0px);
+  --wb-shadow-panel: 0 8px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.wb-root, .wb-root * { box-sizing: border-box; }
+
+.wb-root {
+  position: absolute;
+  inset: 0;
+  font-family: 'Exo 2', system-ui, sans-serif;
+  color: var(--wb-text);
+  -webkit-tap-highlight-color: transparent;
+  pointer-events: none; /* let clicks fall through to the WebGL canvas by default */
+  user-select: none;
+  overflow: hidden;
+}
+
+/* :where() keeps this reset at zero specificity so every component's own
+   background/border/color (.wb-btn-primary, .wb-switch, .wb-power-btn, ...)
+   — even a single class selector — reliably wins over it. Without this, a
+   plain class rule loses to the (class + type) specificity of `.wb-root
+   button` and silently falls back to a transparent background / inherited
+   text color, which is what made primary CTAs render dark-on-dark. */
+:where(.wb-root) button {
+  font-family: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.wb-num { font-family: 'Orbitron', 'Exo 2', system-ui, sans-serif; font-weight: 700; letter-spacing: 0.02em; }
+
+/* Fast-read numerals: probe counts and power charge badges must be unambiguous
+   at a glance, so they use Exo 2 (not Orbitron's stylized digits) at a heavy
+   weight with tabular figures. Orbitron stays reserved for titles/wordmark. */
+.wb-num-fast {
+  font-family: 'Exo 2', system-ui, sans-serif;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+  letter-spacing: 0;
+}
+
+.wb-glass {
+  background: var(--wb-bg-glass);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid var(--wb-edge);
+  box-shadow: var(--wb-shadow-panel);
+}
+
+.wb-hidden { display: none !important; }
+.wb-fade-out { opacity: 0 !important; pointer-events: none !important; }
+
+/* ---------------------------------------------------------------- top bar */
+
+.wb-topbar {
+  position: absolute;
+  top: calc(10px + var(--wb-safe-t));
+  left: calc(12px + var(--wb-safe-l));
+  right: calc(12px + var(--wb-safe-r));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.wb-stardust-pill {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px 8px 10px;
+  border-radius: 999px;
+  pointer-events: auto;
+}
+
+.wb-stardust-pill svg { width: 20px; height: 20px; fill: var(--wb-stardust); filter: drop-shadow(0 0 6px rgba(255, 209, 102, 0.55)); }
+
+.wb-stardust-pill .wb-num-fast { font-size: 17px; }
+
+.wb-planet-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 6px 18px;
+  border-radius: 999px;
+  min-width: 148px;
+  position: relative;
+}
+
+.wb-planet-badge .wb-planet-name {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: linear-gradient(90deg, var(--wb-accent), var(--wb-accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.wb-planet-badge .wb-level-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--wb-text-dim);
+  text-transform: uppercase;
+}
+
+.wb-ring {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: conic-gradient(var(--wb-accent) calc(var(--wb-pct, 0) * 1%), rgba(255, 255, 255, 0.14) 0);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.wb-ring::after { content: ''; width: 9px; height: 9px; border-radius: 50%; background: rgba(9, 12, 26, 0.9); }
+
+.wb-gear-btn, .wb-icon-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: none;
+  pointer-events: auto;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+.wb-gear-btn svg, .wb-icon-btn svg { width: 22px; height: 22px; fill: var(--wb-text); }
+.wb-gear-btn:active, .wb-icon-btn:active { transform: scale(0.88); }
+
+/* --------------------------------------------------------------- probe dock */
+
+.wb-dock {
+  position: absolute;
+  left: 50%;
+  bottom: calc(96px + var(--wb-safe-b));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  pointer-events: none;
+}
+
+.wb-orb {
+  --c: #6ad2ff;
+  position: relative;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 34% 28%, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0) 42%),
+    radial-gradient(circle at 60% 75%, color-mix(in srgb, var(--c) 70%, #000 15%), var(--c) 60%);
+  box-shadow: 0 0 22px color-mix(in srgb, var(--c) 65%, transparent), inset 0 -6px 10px rgba(0, 0, 0, 0.35), inset 0 3px 6px rgba(255, 255, 255, 0.35);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.wb-orb-current {
+  width: 76px;
+  height: 76px;
+  pointer-events: auto;
+  transition: transform 0.12s ease;
+}
+.wb-orb-current:active { transform: scale(0.94); }
+.wb-orb-current .wb-num-fast {
+  font-size: 22px;
+  color: #fff;
+  /* Dark halo in every direction so the digit stays legible on light/white
+     probe colors, plus a soft drop shadow for depth on dark ones. */
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.9),
+    0 -1px 2px rgba(0, 0, 0, 0.9),
+    1px 0 2px rgba(0, 0, 0, 0.9),
+    -1px 0 2px rgba(0, 0, 0, 0.9),
+    0 2px 6px rgba(0, 0, 0, 0.55);
+}
+
+.wb-orb-next {
+  width: 42px;
+  height: 42px;
+  margin-bottom: 4px;
+  opacity: 0.92;
+}
+
+.wb-orb.wb-prism {
+  --c: #b98bff;
+  background:
+    radial-gradient(circle at 34% 28%, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0) 42%),
+    conic-gradient(from 0deg, #ff6b6b, #ffd166, #6bffb0, #6ad2ff, #b98bff, #ff6b6b);
+  animation: wb-prism-spin 3.2s linear infinite;
+}
+@keyframes wb-prism-spin { to { filter: hue-rotate(360deg); } }
+
+.wb-swap-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  margin-bottom: 8px;
+  pointer-events: auto;
+  transition: transform 0.15s ease;
+}
+.wb-swap-btn svg { width: 20px; height: 20px; fill: var(--wb-text); }
+.wb-swap-btn:active { transform: scale(0.85) rotate(90deg); }
+
+/* --------------------------------------------------------------- power bar */
+
+.wb-powerbar {
+  position: absolute;
+  left: 50%;
+  bottom: calc(16px + var(--wb-safe-b));
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 20px;
+  pointer-events: none;
+}
+
+.wb-power-btn {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  pointer-events: auto;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--wb-edge);
+  transition: transform 0.12s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.2s ease;
+}
+.wb-power-btn svg { width: 24px; height: 24px; fill: var(--wb-text); }
+.wb-power-btn:active { transform: scale(0.9); }
+
+.wb-power-btn[data-locked="true"] { opacity: 0.55; }
+.wb-power-btn[data-locked="true"] svg.wb-power-icon { opacity: 0.35; }
+.wb-power-btn[data-locked="true"] .wb-power-lock { display: grid; }
+
+.wb-power-lock {
+  display: none;
+  position: absolute;
+  inset: 0;
+  place-items: center;
+}
+.wb-power-lock svg { width: 18px; height: 18px; fill: rgba(238, 242, 255, 0.85); }
+
+.wb-power-badge {
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(9, 12, 26, 0.92);
+  border: 1px solid var(--wb-edge-bright);
+  white-space: nowrap;
+}
+
+.wb-power-charge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--wb-accent);
+  color: #0b0f1e;
+  font-family: 'Exo 2', system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+  font-size: 11px;
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+}
+
+.wb-power-btn[data-active="true"] {
+  border-color: var(--wb-good);
+  background: rgba(107, 255, 176, 0.15);
+  box-shadow: 0 0 18px rgba(107, 255, 176, 0.55);
+  animation: wb-power-pulse 1.1s ease-in-out infinite;
+}
+@keyframes wb-power-pulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(107, 255, 176, 0.4); }
+  50% { box-shadow: 0 0 22px rgba(107, 255, 176, 0.8); }
+}
+
+.wb-power-btn[data-buy="true"] .wb-power-charge {
+  background: var(--wb-stardust);
+  font-size: 9px;
+  min-width: 26px;
+}
+
+/* ------------------------------------------------------------------- toast */
+
+.wb-toast-wrap {
+  position: absolute;
+  top: calc(70px + var(--wb-safe-t));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.wb-toast {
+  padding: 9px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+.wb-toast.wb-show { opacity: 1; transform: translateY(0); }
+
+.wb-combo {
+  font-family: 'Orbitron', sans-serif;
+  font-size: clamp(20px, 7.2vw, 30px);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: #fff;
+  text-shadow: 0 0 18px var(--wb-accent), 0 0 40px var(--wb-accent-2);
+  opacity: 0;
+  transform: scale(0.6);
+  transition: none;
+}
+.wb-combo.wb-show {
+  animation: wb-combo-pop 1.1s cubic-bezier(0.2, 1.4, 0.4, 1) forwards;
+}
+@keyframes wb-combo-pop {
+  0% { opacity: 0; transform: scale(0.5); }
+  18% { opacity: 1; transform: scale(1.12); }
+  30% { transform: scale(1); }
+  78% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.05); }
+}
+
+/* ---------------------------------------------------------------- loading */
+
+.wb-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  gap: 18px;
+  background: radial-gradient(ellipse at 50% 40%, #14203e 0%, #05070f 78%);
+  pointer-events: auto;
+  transition: opacity 0.35s ease;
+}
+.wb-loading-planet {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #7ec8ff, #1a4fa0 60%, #061225);
+  box-shadow: 0 0 40px rgba(110, 170, 255, 0.55);
+  animation: wb-spin-slow 5s linear infinite;
+}
+@keyframes wb-spin-slow { to { transform: rotate(360deg); } }
+.wb-loading-text {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 14px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--wb-text-dim);
+}
+.wb-loading-dots::after {
+  content: '';
+  display: inline-block;
+  width: 1.2em;
+  text-align: left;
+  animation: wb-dots 1.2s steps(4, end) infinite;
+}
+@keyframes wb-dots { to { content: '...'; } }
+
+/* ----------------------------------------------------------- modal scrim */
+
+.wb-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 6, 14, 0.72);
+  display: grid;
+  place-items: center;
+  padding: 24px calc(16px + var(--wb-safe-r)) calc(24px + var(--wb-safe-b)) calc(16px + var(--wb-safe-l));
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.wb-scrim.wb-show { opacity: 1; pointer-events: auto; }
+
+.wb-card {
+  width: 100%;
+  max-width: 360px;
+  max-height: 100%;
+  overflow-y: auto;
+  border-radius: var(--wb-radius-lg);
+  padding: 26px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  transform: translateY(18px) scale(0.96);
+  opacity: 0;
+  transition: transform 0.4s cubic-bezier(0.2, 1.2, 0.3, 1), opacity 0.3s ease;
+}
+.wb-scrim.wb-show .wb-card { transform: translateY(0) scale(1); opacity: 1; }
+
+.wb-card-title {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: linear-gradient(90deg, var(--wb-accent), var(--wb-accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.wb-card-sub { font-size: 12.5px; color: var(--wb-text-dim); margin-top: -4px; }
+
+.wb-stars { display: flex; gap: 8px; margin: 6px 0 2px; }
+.wb-stars svg { width: 34px; height: 34px; fill: rgba(255, 255, 255, 0.16); transition: transform 0.3s ease; }
+.wb-stars svg.wb-star-on {
+  fill: var(--wb-stardust);
+  filter: drop-shadow(0 0 8px rgba(255, 209, 102, 0.7));
+  animation: wb-star-in 0.5s cubic-bezier(0.2, 1.6, 0.4, 1) backwards;
+}
+@keyframes wb-star-in { 0% { transform: scale(0) rotate(-40deg); } 70% { transform: scale(1.25) rotate(8deg); } 100% { transform: scale(1) rotate(0); } }
+
+.wb-stardust-earn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(255, 209, 102, 0.12);
+  border: 1px solid rgba(255, 209, 102, 0.35);
+  margin: 4px 0;
+}
+.wb-stardust-earn svg { width: 16px; height: 16px; fill: var(--wb-stardust); }
+.wb-stardust-earn .wb-num-fast { color: var(--wb-stardust); font-size: 16px; }
+
+.wb-fact {
+  width: 100%;
+  border-radius: var(--wb-radius-sm);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--wb-edge);
+  padding: 12px 14px;
+  text-align: left;
+  margin: 6px 0 4px;
+}
+.wb-fact-title { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--wb-accent); margin-bottom: 4px; font-weight: 700; }
+.wb-fact-text { font-size: 13px; line-height: 1.45; color: var(--wb-text); }
+
+.wb-next-stop { font-size: 13px; color: var(--wb-text-dim); }
+.wb-next-stop b { color: var(--wb-text); }
+
+.wb-beads-left { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--wb-text-dim); margin: 4px 0; }
+.wb-beads-left b { font-family: 'Orbitron', sans-serif; color: var(--wb-danger); font-size: 20px; }
+
+.wb-btn-primary {
+  width: 100%;
+  padding: 13px 18px;
+  border-radius: 999px;
+  border: none;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  /* #06101f on the accent gradient measures ~9.5:1 (cyan) / ~7.6:1 (purple) — well past the 4.5:1 floor. */
+  color: #06101f;
+  background: linear-gradient(135deg, var(--wb-accent) 0%, var(--wb-accent-2) 100%);
+  box-shadow: 0 6px 18px rgba(106, 210, 255, 0.45), 0 0 28px rgba(185, 139, 255, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  margin-top: 8px;
+  min-height: 48px;
+  transition: transform 0.12s ease, box-shadow 0.15s ease;
+}
+.wb-btn-primary:active {
+  transform: scale(0.96);
+  box-shadow: 0 3px 10px rgba(106, 210, 255, 0.4), 0 0 16px rgba(185, 139, 255, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.wb-btn-secondary {
+  width: 100%;
+  padding: 11px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--wb-text);
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--wb-edge-bright);
+  min-height: 44px;
+  transition: transform 0.12s ease, background 0.15s ease;
+}
+.wb-btn-secondary:active { transform: scale(0.96); }
+
+/* --------------------------------------------------------------- unlock */
+
+.wb-unlock-icon {
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.25), rgba(255, 255, 255, 0) 60%), rgba(106, 210, 255, 0.16);
+  border: 1px solid var(--wb-edge-bright);
+  box-shadow: 0 0 26px rgba(106, 210, 255, 0.45);
+  animation: wb-unlock-pop 0.6s cubic-bezier(0.2, 1.5, 0.3, 1);
+}
+.wb-unlock-icon svg { width: 34px; height: 34px; fill: var(--wb-accent); }
+@keyframes wb-unlock-pop { 0% { transform: scale(0); } 65% { transform: scale(1.15); } 100% { transform: scale(1); } }
+
+/* -------------------------------------------------------------- settings */
+
+.wb-settings-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.wb-settings-row:last-of-type { border-bottom: none; }
+.wb-settings-label { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.wb-settings-label svg { width: 20px; height: 20px; fill: var(--wb-text-dim); }
+
+.wb-switch {
+  width: 46px;
+  height: 26px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  position: relative;
+  min-height: 0;
+  padding: 0;
+  transition: background 0.2s ease;
+  flex: none;
+}
+.wb-switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s cubic-bezier(0.3, 1.4, 0.4, 1);
+}
+.wb-switch[data-on="true"] { background: var(--wb-accent); }
+.wb-switch[data-on="true"]::after { transform: translateX(20px); }
+
+.wb-credits {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--wb-text-dim);
+  margin-top: 12px;
+  text-align: center;
+  opacity: 0.8;
+}
+
+.wb-close-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.06);
+}
+.wb-close-btn svg { width: 16px; height: 16px; fill: var(--wb-text); }
+
+/* --------------------------------------------------------- title beats */
+
+.wb-titlebeat-layer {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  padding: 0 32px;
+  background: rgba(2, 4, 10, 0.28);
+}
+.wb-titlebeat {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 19px;
+  font-weight: 600;
+  text-align: center;
+  letter-spacing: 0.5em;
+  color: var(--wb-text);
+  text-shadow: 0 0 24px rgba(106, 210, 255, 0.5);
+  opacity: 0;
+}
+.wb-titlebeat.wb-tb-in { animation: wb-tb-in 1.1s ease forwards; }
+.wb-titlebeat.wb-tb-out { animation: wb-tb-out 0.8s ease forwards; }
+@keyframes wb-tb-in { from { opacity: 0; letter-spacing: 0.9em; } to { opacity: 1; letter-spacing: 0.14em; } }
+@keyframes wb-tb-out { from { opacity: 1; } to { opacity: 0; letter-spacing: 0.3em; } }
+
+/* -------------------------------------------------------------------- logo */
+
+.wb-logo-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  /* Translucent vignette only — the assembled bead planet must stay visible
+     behind the logo/tap-to-begin screen, not be hidden behind an opaque
+     panel. */
+  background: radial-gradient(ellipse at 50% 38%, rgba(22, 38, 74, 0.32) 0%, rgba(4, 6, 13, 0.58) 75%);
+  pointer-events: auto;
+  cursor: pointer;
+}
+.wb-logo-word {
+  font-family: 'Orbitron', sans-serif;
+  font-size: clamp(26px, 9.5vw, 46px);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  background: linear-gradient(120deg, #fff 10%, var(--wb-accent) 45%, var(--wb-accent-2) 80%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  position: relative;
+  overflow: hidden;
+  padding: 0 4px;
+}
+.wb-logo-word::after {
+  content: '';
+  position: absolute;
+  top: 0; left: -60%;
+  width: 40%; height: 100%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.85), transparent);
+  animation: wb-shimmer 3.2s ease-in-out infinite;
+  mix-blend-mode: overlay;
+}
+@keyframes wb-shimmer { 0% { left: -60%; } 40%, 100% { left: 130%; } }
+
+.wb-logo-sub {
+  font-size: 12.5px;
+  letter-spacing: 0.5em;
+  color: var(--wb-text-dim);
+  text-transform: uppercase;
+  padding-left: 0.5em;
+}
+
+.wb-logo-tap {
+  margin-top: 26px;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: var(--wb-accent);
+  text-transform: uppercase;
+  animation: wb-tap-pulse 1.6s ease-in-out infinite;
+}
+@keyframes wb-tap-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+
+/* ---------------------------------------------------------------- skip */
+
+.wb-skip-btn {
+  position: absolute;
+  top: calc(16px + var(--wb-safe-t));
+  right: calc(14px + var(--wb-safe-r));
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: auto;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+/* --------------------------------------------------------------- tutorial */
+
+.wb-tutorial-layer {
+  position: absolute;
+  inset: 0;
+  /* The layer itself must stay transparent to hit-testing (its own box would
+     otherwise shadow the blocker when the blocker is briefly disabled to look
+     up the real element under the pointer); only .wb-tutorial-blocker below
+     actually captures pointer events. */
+  pointer-events: none;
+  z-index: 50;
+}
+.wb-tutorial-mask {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.wb-tutorial-dim { fill: rgba(3, 5, 12, 0.72); }
+.wb-tutorial-ring {
+  /* Always-visible base ring around the spotlight, so the target's outline
+     never disappears — only the echo (below) pulses outward from it. */
+  fill: none;
+  stroke: var(--wb-accent);
+  stroke-width: 3;
+  opacity: 1;
+  filter: drop-shadow(0 0 6px var(--wb-accent));
+}
+.wb-tutorial-ring-echo {
+  fill: none;
+  stroke: var(--wb-accent);
+  stroke-width: 2.5;
+  opacity: 0.8;
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: wb-ring-pulse 1.6s ease-out infinite;
+}
+@keyframes wb-ring-pulse {
+  0% { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+
+.wb-tutorial-blocker {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+}
+
+.wb-tutorial-caption {
+  position: absolute;
+  max-width: 260px;
+  padding: 12px 16px;
+  border-radius: var(--wb-radius-sm);
+  font-size: 14px;
+  line-height: 1.4;
+  text-align: center;
+  transform: translate(-50%, 0);
+  transition: top 0.35s cubic-bezier(0.3, 1, 0.4, 1), left 0.35s cubic-bezier(0.3, 1, 0.4, 1);
+  pointer-events: none;
+}
+
+.wb-tutorial-hand {
+  position: absolute;
+  width: 40px;
+  height: 40px;
+  transform: translate(-50%, -50%);
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.6));
+  transition: top 0.35s ease, left 0.35s ease;
+  pointer-events: none;
+}
+.wb-tutorial-hand svg { width: 100%; height: 100%; fill: #fff; }
+.wb-tutorial-hand.wb-gesture-tap { animation: wb-hand-tap 1.1s ease-in-out infinite; }
+.wb-tutorial-hand.wb-gesture-drag { animation: wb-hand-drag 1.6s ease-in-out infinite; }
+.wb-tutorial-hand.wb-gesture-swipe { animation: wb-hand-swipe 1.3s ease-in-out infinite; }
+/* Anchored at the target's lower-right edge (see Tutorial.applyCircle): the
+   fingertip cluster near the icon's top sits at the anchor point so only the
+   fingertip grazes the edge while the palm extends outward, away from the
+   spotlighted target, keeping it fully visible. */
+@keyframes wb-hand-tap {
+  0%, 100% { transform: translate(-55%, -22%) scale(1); }
+  40% { transform: translate(-55%, -14%) scale(0.85); }
+  55% { transform: translate(-55%, -22%) scale(1.05); }
+}
+@keyframes wb-hand-drag { 0% { transform: translate(-70%, -50%); } 50% { transform: translate(-30%, -50%); } 100% { transform: translate(-70%, -50%); } }
+@keyframes wb-hand-swipe { 0% { transform: translate(-90%, -50%) rotate(-8deg); } 50% { transform: translate(-10%, -50%) rotate(8deg); } 100% { transform: translate(-90%, -50%) rotate(-8deg); } }
+
+/* ----------------------------------------------------------- reduced motion */
+
+@media (prefers-reduced-motion: reduce) {
+  .wb-root * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ------------------------------------------------------------- small phones */
+
+@media (max-width: 340px) {
+  .wb-planet-badge { min-width: 118px; padding: 6px 12px; }
+  .wb-orb-current { width: 68px; height: 68px; }
+  .wb-power-btn { width: 46px; height: 46px; }
+  .wb-powerbar { gap: 7px; }
+}
