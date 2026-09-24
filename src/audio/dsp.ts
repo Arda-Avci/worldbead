@@ -156,3 +156,34 @@ export function playNoise(ctx: BaseAudioContext, dest: AudioNode, opts: NoiseOpt
 export function jitterCents(range = 20): number {
   return (Math.random() * 2 - 1) * range;
 }
+
+// Just-intonation ratios for each of the 12 chromatic scale steps, favoring
+// low-integer, low-beat consonances (1, 9/8, 5/4, 4/3, 3/2, 5/3, 2, ...) over
+// 12-TET semitone ratios (2^(n/12)). Shared by music.ts (pads/arps) and
+// sfx.ts (pitched sound effects) so both stay in the same "key" per mood.
+export const JUST_RATIOS = [
+  1, // 0: unison
+  16 / 15, // 1: minor second
+  9 / 8, // 2: major second
+  6 / 5, // 3: minor third
+  5 / 4, // 4: major third
+  4 / 3, // 5: perfect fourth
+  45 / 32, // 6: tritone
+  3 / 2, // 7: perfect fifth
+  8 / 5, // 8: minor sixth
+  5 / 3, // 9: major sixth
+  9 / 5, // 10: minor seventh
+  15 / 8, // 11: major seventh
+];
+
+/** Converts a scale-step offset (may be negative or span several octaves) to a just-intonation ratio. */
+export function stepToRatio(step: number): number {
+  const octave = Math.floor(step / 12);
+  const rem = ((step % 12) + 12) % 12;
+  return JUST_RATIOS[rem] * Math.pow(2, octave);
+}
+
+/** Converts a scale-step offset from `root` (Hz) to a just-intonation frequency. */
+export function stepToHz(root: number, step: number): number {
+  return root * stepToRatio(step);
+}

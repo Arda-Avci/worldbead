@@ -1,13 +1,30 @@
 // Synthesis recipes for every SfxName. Each builder takes a BaseAudioContext
 // and destination node so it runs identically on a live AudioContext or an
 // OfflineAudioContext (used by the headless render test).
-import type { SfxName } from './types';
-import { playTone, playNoise, jitterCents } from './dsp';
+import type { PlanetId, SfxName } from './types';
+import { playTone, playNoise, jitterCents, stepToHz } from './dsp';
+import { PLANET_MOODS } from './music';
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
-function fire(ctx: BaseAudioContext, dest: AudioNode, t: number, intensity: number): number {
+/** Just-intonation ratios reused directly (not via a scale-step) for chordal/arpeggio fx. */
+const RATIO_UNISON = 1;
+const RATIO_MAJOR_THIRD = 5 / 4;
+const RATIO_FIFTH = 3 / 2;
+const RATIO_OCTAVE = 2;
+
+/** Picks an ascending scale degree (0 = lowest, 1 = highest) from the current mood's
+ * scale, for chain-pop pitches that climb as combos grow. `octave` shifts the whole
+ * thing up/down by whole octaves to land in the right register for the effect. */
+function moodScaleHz(planet: PlanetId, t: number, octave: number): number {
+  const mood = PLANET_MOODS[planet];
+  const idx = Math.round(clamp01(t) * (mood.scale.length - 1));
+  return stepToHz(mood.root, mood.scale[idx] + octave * 12);
+}
+
+function fire(ctx: BaseAudioContext, dest: AudioNode, t: number, intensity: number, planet: PlanetId): number {
   const i = clamp01(intensity);
+  const mood = PLANET_MOODS[planet];
   // Airy rising whoosh.
   const d1 = playNoise(ctx, dest, {
     start: t,
@@ -20,11 +37,12 @@ function fire(ctx: BaseAudioContext, dest: AudioNode, t: number, intensity: numb
     freqEnd: 3200 + i * 800,
     q: 0.7,
   });
-  // Soft laser tone riding underneath.
+  // Soft laser tone riding underneath, rising an octave from the mood's root.
+  const startFreq = stepToHz(mood.root, 12) * (1 + i * 0.15);
   const d2 = playTone(ctx, dest, {
     type: 'sawtooth',
-    freq: 520 + i * 120,
-    freqEnd: 980 + i * 200,
+    freq: startFreq,
+    freqEnd: startFreq * RATIO_OCTAVE,
     start: t + 0.01,
     attack: 0.01,
     decay: 0.18,
@@ -34,7 +52,7 @@ function fire(ctx: BaseAudioContext, dest: AudioNode, t: number, intensity: numb
   return Math.max(d1, d2) + 0.02;
 }
 
-function pop(ctx: BaseAudioContext, dest: AudioNode, t: number, intensity: number): number {
+function pop(ctx: BaseAudioContext, dest: AudioNode, t: number, intensity: number, planet: PlanetId): number {
   const i = clamp01(intensity);
   // Crisp click transient.
   const d1 = playNoise(ctx, dest, {
@@ -47,8 +65,8 @@ function pop(ctx: BaseAudioContext, dest: AudioNode, t: number, intensity: numbe
     freq: 2200,
     q: 0.9,
   });
-  // Tuned glassy body; pitch rises slightly with region size (intensity).
-  const baseFreq = 780 * (1 + i * 0.5);
+  // Tuned glassy body; climbs the current mood's scale as combos grow.
+  const baseFreq = moodScaleHz(planet, i, 2);
   const d2 = playTone(ctx, dest, {
     type: 'triangle',
     freq: baseFreq,
@@ -62,7 +80,7 @@ function pop(ctx: BaseAudioContext, dest: AudioNode, t: number, intensity: numbe
   });
   const d3 = playTone(ctx, dest, {
     type: 'sine',
-    freq: baseFreq * 2.01,
+    freq: baseFreq * RATIO_OCTAVE,
     start: t,
     attack: 0.002,
     decay: 0.05,
@@ -72,7 +90,7 @@ function pop(ctx: BaseAudioContext, dest: AudioNode, t: number, intensity: numbe
   return Math.max(d1, d2, d3) + 0.02;
 }
 
-function bigPop(ctx: BaseAudioContext, dest: AudioNode, t: number, intensity: number): number {
+function bigPop(ctx: BaseAudioContext, dest: AudioNode, t: number, intensity: number, planet: PlanetId): number {
   const i = clamp01(intensity);
   const d1 = playNoise(ctx, dest, {
     start: t,
@@ -84,7 +102,8 @@ function bigPop(ctx: BaseAudioContext, dest: AudioNode, t: number, intensity: nu
     freq: 1500,
     q: 0.8,
   });
-  const baseFreq = 380 * (1 + i * 0.4);
+  // One octave below `pop`, climbing the same mood scale for combo chains.
+  const baseFreq = moodScaleHz(planet, i, 1);
   const d2 = playTone(ctx, dest, {
     type: 'triangle',
     freq: baseFreq,
@@ -154,11 +173,15 @@ function miss(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
   return Math.max(d1, d1b, 0.08 + d2) + 0.03;
 }
 
-function swap(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
+function swap(ctx: BaseAudioContext, dest: AudioNode, t: number, planet: PlanetId): number {
+  const mood = PLANET_MOODS[planet];
+  const base = mood.root * RATIO_OCTAVE; // one octave up register
+  const f1 = base * RATIO_FIFTH;
+  const f2 = base * RATIO_MAJOR_THIRD;
   playTone(ctx, dest, {
     type: 'triangle',
-    freq: 500,
-    freqEnd: 760,
+    freq: f1,
+    freqEnd: f2,
     start: t,
     attack: 0.003,
     decay: 0.07,
@@ -166,8 +189,8 @@ function swap(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
   });
   const d2 = playTone(ctx, dest, {
     type: 'triangle',
-    freq: 760,
-    freqEnd: 560,
+    freq: f2,
+    freqEnd: base * RATIO_UNISON,
     start: t + 0.05,
     attack: 0.003,
     decay: 0.08,
@@ -176,12 +199,14 @@ function swap(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
   return 0.05 + d2 + 0.02;
 }
 
-function powerMeteor(ctx: BaseAudioContext, dest: AudioNode, t: number, intensity: number): number {
+function powerMeteor(ctx: BaseAudioContext, dest: AudioNode, t: number, intensity: number, planet: PlanetId): number {
   const i = clamp01(intensity);
+  const mood = PLANET_MOODS[planet];
+  const startFreq = mood.root * 0.5; // sub-bass, half the root
   const d1 = playTone(ctx, dest, {
     type: 'sine',
-    freq: 90,
-    freqEnd: 40,
+    freq: startFreq,
+    freqEnd: startFreq * (40 / 90),
     start: t,
     attack: 0.01,
     decay: 0.5 + i * 0.2,
@@ -211,8 +236,14 @@ function powerMeteor(ctx: BaseAudioContext, dest: AudioNode, t: number, intensit
   return Math.max(d1, d2, d3) + 0.03;
 }
 
-function powerPrism(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
-  const notes = [1046.5, 1318.5, 1568, 1864.7, 2093, 2637];
+function powerPrism(ctx: BaseAudioContext, dest: AudioNode, t: number, planet: PlanetId): number {
+  const mood = PLANET_MOODS[planet];
+  // Ascending run through the mood's scale, three octaves up for a bright twinkle.
+  const notes = [0, 1, 2, 3, 4, 5].map((i) => {
+    const octave = 3 + Math.floor(i / mood.scale.length);
+    const degree = mood.scale[i % mood.scale.length];
+    return stepToHz(mood.root, degree + octave * 12);
+  });
   let maxEnd = 0;
   notes.forEach((f, idx) => {
     const start = t + idx * 0.045;
@@ -231,7 +262,8 @@ function powerPrism(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
   return maxEnd + 0.05;
 }
 
-function powerFlare(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
+function powerFlare(ctx: BaseAudioContext, dest: AudioNode, t: number, planet: PlanetId): number {
+  const mood = PLANET_MOODS[planet];
   const d1 = playNoise(ctx, dest, {
     start: t,
     duration: 0.85,
@@ -243,10 +275,11 @@ function powerFlare(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
     freqEnd: 2600,
     q: 0.9,
   });
+  // Swells one octave up from the mood's root.
   const d2 = playTone(ctx, dest, {
     type: 'sawtooth',
-    freq: 220,
-    freqEnd: 440,
+    freq: mood.root,
+    freqEnd: mood.root * RATIO_OCTAVE,
     start: t,
     attack: 0.35,
     decay: 0.4,
@@ -256,7 +289,8 @@ function powerFlare(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
   return Math.max(d1, d2) + 0.05;
 }
 
-function powerComet(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
+function powerComet(ctx: BaseAudioContext, dest: AudioNode, t: number, planet: PlanetId): number {
+  const mood = PLANET_MOODS[planet];
   const d1 = playNoise(ctx, dest, {
     start: t,
     duration: 0.45,
@@ -269,10 +303,11 @@ function powerComet(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
     q: 1.4,
     pan: -0.8,
   });
+  // Falling fifth from three octaves up down to one octave up.
   const d2 = playTone(ctx, dest, {
     type: 'sine',
-    freq: 1800,
-    freqEnd: 500,
+    freq: stepToHz(mood.root, 24 + 7),
+    freqEnd: mood.root * RATIO_OCTAVE,
     start: t + 0.03,
     attack: 0.01,
     decay: 0.3,
@@ -282,8 +317,10 @@ function powerComet(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
   return Math.max(d1, 0.03 + d2) + 0.03;
 }
 
-function unlock(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
-  const notes = [880, 1108.7, 1318.5, 1760];
+function unlock(ctx: BaseAudioContext, dest: AudioNode, t: number, planet: PlanetId): number {
+  const mood = PLANET_MOODS[planet];
+  const base = mood.root * 4; // two octaves up
+  const notes = [base * RATIO_UNISON, base * RATIO_MAJOR_THIRD, base * RATIO_FIFTH, base * RATIO_OCTAVE];
   let maxEnd = 0;
   notes.forEach((f, idx) => {
     const start = t + idx * 0.07;
@@ -344,8 +381,10 @@ function starGain(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
   return maxEnd + 0.03;
 }
 
-function win(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
-  const arpeggio = [523.25, 659.25, 783.99, 1046.5];
+function win(ctx: BaseAudioContext, dest: AudioNode, t: number, planet: PlanetId): number {
+  const mood = PLANET_MOODS[planet];
+  const base = mood.root * RATIO_OCTAVE;
+  const arpeggio = [base * RATIO_UNISON, base * RATIO_MAJOR_THIRD, base * RATIO_FIFTH, base * RATIO_OCTAVE];
   let maxEnd = 0;
   arpeggio.forEach((f, idx) => {
     const start = t + idx * 0.1;
@@ -370,9 +409,10 @@ function win(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
     });
     maxEnd = Math.max(maxEnd, start - t + d);
   });
-  // Final held chord.
+  // Final held chord, an octave above the arpeggio's start.
   const chordStart = t + arpeggio.length * 0.1;
-  const chord = [1046.5, 1318.5, 1568];
+  const chordBase = base * RATIO_OCTAVE;
+  const chord = [chordBase * RATIO_UNISON, chordBase * RATIO_MAJOR_THIRD, chordBase * RATIO_FIFTH];
   chord.forEach((f) => {
     const d = playTone(ctx, dest, {
       type: 'triangle',
@@ -388,9 +428,12 @@ function win(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
   return maxEnd + 0.05;
 }
 
-function lose(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
-  // Gentle descending minor phrase, soft timbre.
-  const notes = [523.25, 466.16, 415.3, 349.23];
+function lose(ctx: BaseAudioContext, dest: AudioNode, t: number, planet: PlanetId): number {
+  // Gentle descending phrase, soft timbre, in the current mood's key.
+  const mood = PLANET_MOODS[planet];
+  const base = mood.root * RATIO_OCTAVE;
+  const steps = [0, -2, -4, -7];
+  const notes = steps.map((step) => stepToHz(base, step));
   let maxEnd = 0;
   notes.forEach((f, idx) => {
     const start = t + idx * 0.26;
@@ -445,36 +488,37 @@ export function buildSfx(
   name: SfxName,
   startTime: number,
   intensity: number,
+  planet: PlanetId = 'earth',
 ): number {
   switch (name) {
     case 'fire':
-      return fire(ctx, dest, startTime, intensity);
+      return fire(ctx, dest, startTime, intensity, planet);
     case 'pop':
-      return pop(ctx, dest, startTime, intensity);
+      return pop(ctx, dest, startTime, intensity, planet);
     case 'bigPop':
-      return bigPop(ctx, dest, startTime, intensity);
+      return bigPop(ctx, dest, startTime, intensity, planet);
     case 'miss':
       return miss(ctx, dest, startTime);
     case 'swap':
-      return swap(ctx, dest, startTime);
+      return swap(ctx, dest, startTime, planet);
     case 'powerMeteor':
-      return powerMeteor(ctx, dest, startTime, intensity);
+      return powerMeteor(ctx, dest, startTime, intensity, planet);
     case 'powerPrism':
-      return powerPrism(ctx, dest, startTime);
+      return powerPrism(ctx, dest, startTime, planet);
     case 'powerFlare':
-      return powerFlare(ctx, dest, startTime);
+      return powerFlare(ctx, dest, startTime, planet);
     case 'powerComet':
-      return powerComet(ctx, dest, startTime);
+      return powerComet(ctx, dest, startTime, planet);
     case 'unlock':
-      return unlock(ctx, dest, startTime);
+      return unlock(ctx, dest, startTime, planet);
     case 'uiTap':
       return uiTap(ctx, dest, startTime);
     case 'starGain':
       return starGain(ctx, dest, startTime);
     case 'win':
-      return win(ctx, dest, startTime);
+      return win(ctx, dest, startTime, planet);
     case 'lose':
-      return lose(ctx, dest, startTime);
+      return lose(ctx, dest, startTime, planet);
     case 'warp':
       return warp(ctx, dest, startTime);
     default: {
