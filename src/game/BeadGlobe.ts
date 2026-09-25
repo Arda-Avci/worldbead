@@ -583,7 +583,14 @@ export class BeadGlobe implements GlobeAdapter {
     const numExtra = cfg.extraLayers.length;
     const allCounts = [...cfg.extraLayers.map((l) => l.beadCount), cfg.beadCount, ...(cfg.cloudBeadCount > 0 ? [cfg.cloudBeadCount] : [])];
     const totalBeadsAll = allCounts.reduce((a, b) => a + b, 0);
-    const regionShare = (n: number) => Math.max(3, Math.round((cfg.regionTarget * n) / totalBeadsAll));
+    // Jupiter's procedural bands (`generateJupiterBands`) alternate its 8-color palette
+    // across ~2.25 full latitude cycles, so ~18 separate horizontal rings must survive
+    // per shell for the planet to actually read as banded (owner bug report: the normal
+    // continent-style region floor of 3 collapsed almost all of those rings into one or
+    // two blobs). A floor comfortably above that ring count means the merge step below
+    // never has anything to do on Jupiter — every natural ring stays intact.
+    const regionFloor = cfg.planet === 'jupiter' ? 28 : 3;
+    const regionShare = (n: number) => Math.max(regionFloor, Math.round((cfg.regionTarget * n) / totalBeadsAll));
     const RADIUS_STEP = 0.03;
 
     // Outer coarse layers first (index 0 = outermost, coarsest, biggest beads,

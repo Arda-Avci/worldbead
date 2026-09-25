@@ -303,7 +303,14 @@ export class SpaceScene {
    * the blend goes to 1, leaving only a faint glow.
    */
   private updateGameplayLighting(dt: number): void {
-    const target = this.cameraRig.currentShot === 'gameplay' ? 1 : 0;
+    // 'hero' (the post-win planet reveal, where the level-complete/newPlanet/newLayer
+    // cards are shown and the player can linger indefinitely) must read just as bright
+    // and vivid as 'gameplay' — owner bug report: with only the fixed dramatic Sun key
+    // light active, the reveal looked "dark and dull" on levels where the visible
+    // hemisphere didn't happen to face the fixed Sun direction. Only the brief,
+    // skippable intro shots (deepSpace/approach/sunPass) keep the moodier fixed-Sun-only
+    // look, since nothing there is a screen the player stops and reads.
+    const target = this.cameraRig.currentShot === 'gameplay' || this.cameraRig.currentShot === 'hero' ? 1 : 0;
     const rate = 1 - Math.exp(-dt / 0.35);
     this.gameplayBlend += (target - this.gameplayBlend) * rate;
     const blend = this.gameplayBlend;
