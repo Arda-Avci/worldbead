@@ -145,6 +145,22 @@ function beadCountForRadius(radius: number, depthFromSurface: number): number {
   const shellScale = 1 + BEAD_RADIUS_STEP * depthFromSurface;
   return Math.max(60, Math.round(4 * Math.PI * ((shellScale * BEAD_RADIUS_FACTOR) / radius) ** 2));
 }
+/**
+ * Cloud shells didn't go through the monotonic bead-radius curve at all — `cloudBeadCount` used
+ * to be a flat `0.55 * beadCount` fraction, independent of level, and `BeadGlobe.ts`'s cloud
+ * shell uses a bigger bead-radius factor (0.72, vs. 0.56 for every other shell — "clouds overlap
+ * more so a patch reads as a solid layer, not dots"), so at the same design bead count clouds
+ * always render as visibly bigger beads. On a planet whose clouds *are* its whole visible
+ * surface (Venus, always) this could make its beads render far bigger than an earlier level's —
+ * exactly the invariant this whole radius-curve system exists to prevent (owner bug report).
+ * This inverts the same formula as `beadCountForRadius`, but with the cloud factor, so clouds
+ * get their bead count from the same monotonic-shrink curve as every other shell instead of a
+ * fixed fraction.
+ */
+const BEAD_RADIUS_FACTOR_CLOUD = 0.72; // must match BeadGlobe.ts makeShell's cloud bead-radius factor
+function cloudBeadCountForRadius(radius: number, cloudShellScale: number): number {
+  return Math.max(60, Math.round(4 * Math.PI * ((cloudShellScale * BEAD_RADIUS_FACTOR_CLOUD) / radius) ** 2));
+}
 
 /**
  * Onboarding milestones (item #18a): every new mechanic first appears on its
@@ -196,11 +212,6 @@ export function getLevel(level: number): LevelConfig {
 
   const k = globalK(progress);
 
-  const cloud = curve.cloud === 'always' || (curve.cloud === 'earth' && lv >= FIRST_CLOUD_LEVEL);
-  const cloudBeadCount = cloud ? Math.round(beadCount * 0.55) : 0;
-  const cloudDriftEnabled = cloud && lv >= CLOUD_DRIFT_LEVEL;
-  const cloudFluffiness = clamp((lv - FIRST_CLOUD_LEVEL) / (CLOUD_FLUFF_SATURATION_LEVEL - FIRST_CLOUD_LEVEL), 0, 1);
-
   const layerCount = layerCountForLevel(lv);
   const numExtra = layerCount - 1;
   const extraLayers: ExtraLayerConfig[] = [];
@@ -215,6 +226,19 @@ export function getLevel(level: number): LevelConfig {
       k: Math.max(3, k - distFromSurface),
     });
   }
+
+  const cloud = curve.cloud === 'always' || (curve.cloud === 'earth' && lv >= FIRST_CLOUD_LEVEL);
+  // Clouds sit one step outside whatever the outermost shell already is (the outermost extra
+  // layer, or the surface itself when there are no extra layers) — same monotonic-shrink,
+  // coarser-outward curve as every other shell, just one depth further out, and still hard-capped
+  // at `BEAD_RADIUS_MAX` by `layerBeadRadius` so cloud beads can never exceed level 1's own size.
+  const cloudDepthFromSurface = numExtra + 1;
+  const cloudBeadRadius = layerBeadRadius(sizeProgress, cloudDepthFromSurface);
+  // Must match BeadGlobe.ts makeShell's actual cloud shell world-radius scale (`cloudRadius` there).
+  const cloudShellScale = 1 + BEAD_RADIUS_STEP * numExtra + 0.06;
+  const cloudBeadCount = cloud ? cloudBeadCountForRadius(cloudBeadRadius, cloudShellScale) : 0;
+  const cloudDriftEnabled = cloud && lv >= CLOUD_DRIFT_LEVEL;
+  const cloudFluffiness = clamp((lv - FIRST_CLOUD_LEVEL) / (CLOUD_FLUFF_SATURATION_LEVEL - FIRST_CLOUD_LEVEL), 0, 1);
 
   // ~6 regions at the start of the game -> ~40 near the end, hard-capped at 45, plus a
   // little extra per additional layer so the shot budget accounts for all of them.

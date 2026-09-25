@@ -1038,3 +1038,56 @@ is not a verified fix) — `scratchpad/after6/level{31,35,40}_{5s,20s}.png`
 all show individually-legible glossy-but-not-blown-out beads in three
 clearly distinct classes, against a clean dark starfield background, at
 every checkpoint level and both wait times.
+
+## Cloud shells never followed the monotonic bead-radius curve (owner review round 5)
+
+The size-invariant work earlier in this file (the "bead-size bug fix"
+section) covered `surface` and every `extraLayers` entry, but never
+`cloudBeadCount` — it was still a flat `Math.round(beadCount * 0.55)`,
+completely independent of level. Two things compound from that: (1)
+`BeadGlobe.ts`'s cloud shell uses a bigger bead-radius factor than every
+other shell (0.72 vs. 0.56 — "clouds overlap more so a patch reads as a
+solid layer, not dots"), and (2) a smaller design bead count at the same
+factor already means a bigger per-bead radius (inverse-square relationship
+between count and radius). Both push in the same direction, so cloud beads
+rendered meaningfully bigger than the surface/layer beads at the very same
+level — most visible on Venus, whose entire gameplay surface *is* its cloud
+shell (the owner's own `after6/level35_20s.png` showed it plainly next to
+Earth level 2's smaller beads).
+
+Fixed in `src/game/levels.ts`: added `cloudBeadCountForRadius()`, the same
+inversion `beadCountForRadius()` already does but with the cloud shell's own
+factor (0.72) and its own world-radius scale (`cloudShellScale = 1 +
+BEAD_RADIUS_STEP * numExtra + 0.06`, mirroring `BeadGlobe.ts`'s actual
+`cloudRadius`). `cloudBeadCount` is now derived by treating the cloud shell
+as sitting one depth further out than whatever the current outermost shell
+is (`cloudDepthFromSurface = numExtra + 1`) and feeding that into the exact
+same `layerBeadRadius()` curve every other shell already uses — same
+monotonic shrink with level, same coarser-per-depth curve, same hard cap at
+`BEAD_RADIUS_MAX` (level 1's own radius) so a cloud bead can never exceed
+it. (`cloudBeadCount`'s computation had to move after `numExtra`/`extraLayers`
+are computed in `getLevel()`, since it now depends on them.)
+
+Verified by direct computation (not eyeballed) — bead radius in
+globe-normalized units, comparing every shell at each level against level
+1's own radius (0.0720, the hard ceiling):
+
+| Level | Planet | Surface/layers (outer→inner) | Clouds |
+|---|---|---|---|
+| 1 | Earth | 0.0720 (surface only) | — |
+| 31 | Venus | 0.0646 | 0.0720 (at the cap — correct: early levels' natural cloud radius exceeds it, so it clamps) |
+| 35 | Venus | 0.0640 | 0.0717 (below the cap now that the natural curve has dropped under it) |
+| 40 | Venus | 0.0634 | 0.0710 |
+| 60 | Earth (2 layers) | 0.0686, 0.0612 | 0.0720 (still at the cap — coarser-per-depth pushes it right back up, so the clamp holds it flat at the ceiling rather than exceeding it) |
+| 151 | Earth (3 layers) | 0.0669, 0.0605, 0.0540 | 0.0720 (same clamp) |
+
+Every value is ≤ 0.0720 (level 1's own radius) by construction — the clamp
+inside `layerBeadRadius()` guarantees it algebraically, not just at these
+sampled levels — and clouds never exceed whatever shell they sit outside of
+plus the fixed per-depth coarseness step, exactly like every other layer.
+Screenshots confirming the visual fix (`scratchpad/after7/`, never
+committed): `level1_5s/20s.png` (the reference size), `level31/35/40_5s/20s.png`
+(Venus — bead density now visibly matches level 1, not the noticeably
+bigger/sparser beads in the prior round's screenshots), `level60_5s/20s.png`
+(an Earth cloud tuft, sized consistently with the surrounding surface/layer
+beads rather than as an oversized blob).
