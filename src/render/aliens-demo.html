@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- Demo page lives under src/render/, but texture paths assume the site
+         root; fix relative resolution here rather than in SpaceScene's own
+         asset paths (same pattern as src/render/demo.html). -->
+    <base href="/" />
+    <title>Alien invasion demo</title>
+    <style>
+      html, body { margin: 0; padding: 0; background: #000; overflow: hidden; height: 100%; }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+      #hud {
+        position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+        display: flex; flex-direction: column; gap: 4px; padding: 8px 10px;
+        font: 12px/1.4 -apple-system, sans-serif; color: #cfe0ff;
+        background: linear-gradient(rgba(0,0,0,0.55), rgba(0,0,0,0));
+        pointer-events: none;
+      }
+      #log { max-height: 30vh; overflow: hidden; font: 10px/1.5 monospace; color: #9fe3ff; opacity: 0.9; }
+      #probe {
+        display: flex; align-items: center; gap: 6px;
+      }
+      #probe .swatch { width: 16px; height: 16px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.5); }
+      #ui {
+        position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+        display: flex; flex-wrap: wrap; gap: 4px; padding: 6px;
+        background: rgba(0,0,0,0.4);
+      }
+      #ui button {
+        font: 11px sans-serif; padding: 6px 8px; background: #16233d; color: #cfe0ff;
+        border: 1px solid #3a5488; border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"><canvas id="scene"></canvas></div>
+    <div id="hud">
+      <div id="status" data-status>loading…</div>
+      <div id="probe">probe: <span class="swatch" data-probe-swatch></span> <span data-probe-label></span></div>
+      <div id="log" data-log></div>
+    </div>
+    <div id="ui">
+      <button data-action="spawn">Spawn ship</button>
+      <button data-action="autoplay">Toggle autoplay</button>
+      <button data-action="destroy-all">Destroy all ships</button>
+    </div>
+    <script type="module" src="/src/render/aliens-demo.ts"></script>
+  </body>
+</html>

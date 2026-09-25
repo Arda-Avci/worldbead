@@ -202,6 +202,98 @@ detailed at higher levels; clouds render as coherent white/off-white
 patches (not scattered dots); Venus reads as solid cream cloud cover, Mars
 as rust with darker basins, matching the GDD.
 
+## Alien invasion module (owner: Arda; this session, not yet wired into `Game.ts`)
+
+Built entirely in new files, isolated from a concurrent large edit pass over
+`Game.ts`/`BeadGlobe.ts`/`GameSession.ts`/`levels.ts`/`SpaceScene.ts`/`fx.ts`/
+`gameui.ts`/`ui.css`/`facts.ts` — see `docs/INVASION_INTEGRATION.md` for the
+exact `Game.ts` call sequence a future session should wire up.
+
+- `src/game/invasion.ts` — pure rules (no THREE/DOM), same shape as
+  `GameSession`: `invasionConfigForLevel(level)` (deterministic, seeded
+  per-level difficulty curve — first invasion at level 80, frequency/ship
+  count/attack speed/fire-spread rate/extinguish-probe delay all rise slowly
+  through level 550) and `InvasionController` (ship schedule, attack timers,
+  fire ignite/spread, tracks which beads are on fire).
+- `src/render/aliens.ts` — THREE-only pooled saucer ships (PBR hull +
+  emissive rim + cockpit dome + engine glow + charge-telegraph orb + laser
+  beam + explosion burst), `AlienInvasionRenderer` with
+  `spawnShip`/`setCharging`/`fireLaser`/`destroyShip`/`raycastShips`/`update`.
+  Self-contained — doesn't import `src/render/fx.ts` to avoid touching a
+  file under concurrent edit.
+- `src/audio/types.ts` + `src/audio/sfx.ts` — 6 new procedural SFX
+  (`shipArrive`, `laserCharge`, `laserFire`, `fireCrackle`, `extinguish`,
+  `shipExplode`), following the existing `playTone`/`playNoise` synthesis
+  pattern; `AudioEngine.ts` needed no changes.
+- **Fire mechanic**: a fire bead is just a normal bead whose logical color
+  is reassigned to a reserved ember hex (`FIRE_COLOR` in `invasion.ts`) via
+  two new **optional** `GlobeAdapter` members added to `src/game/types.ts`
+  (`neighborsOf`, `igniteFire`) — `BeadGlobe` doesn't implement them yet
+  (small, precise addition described in the integration doc; `region()`/
+  `pop()`/win-condition all already work correctly for any `colorIdx`
+  without change). This means "extinguish" needs **no new game-rules code
+  at all**: a probe of the fire color, fired at a fire bead, already pops
+  the whole connected patch through the existing `GameSession.fire()` path.
+  The integration layer only needs to force that color into
+  `session.queue` (a public mutable field) on the right shot.
+- `src/render/aliens-demo.html` + `.ts` — standalone demo (same pattern as
+  `src/render/demo.html`): a real `InvasionController` + real
+  `AlienInvasionRenderer` running against a small self-contained
+  `GlobeAdapter` (`DemoGlobe`), since `BeadGlobe` can't yet host fire.
+  `DemoGlobe` doubles as a concrete reference implementation for the
+  `BeadGlobe` addition. `?level=N` picks which level's config to preview
+  (default: the guaranteed first invasion level).
+- Verified via headless Playwright screenshots (390×844, SwiftShader) of the
+  demo page: ship approach/banking, hover wobble, charge telegraph
+  (cyan→orange rim), laser beam, fire ignition (ember-colored beads,
+  close-up confirmed), two-ship harder level, and ship destruction
+  (explosion burst). One rendering gotcha worth remembering for any future
+  headless demo page: **don't `await` a `SpaceScene.flyTo()` before
+  starting the `requestAnimationFrame` loop** — the tween only ever
+  advances inside `scene.update(dt)`, so awaiting it first deadlocks;
+  start the render loop unconditionally, then run `init()` in parallel.
+  Also, headless/software rendering frame times are wildly uneven (seen:
+  ~500ms-1s per frame with this scene's bead count + bloom), so this demo's
+  own dt clamp is
+  deliberately loose (0.2s, vs. the real game's ~0.05s) to avoid the
+  approach animation looking frozen without also letting one slow frame
+  fully consume a short VFX (explosion, laser) between paints. The clamp is
+  further tightened to ~0.045s specifically while a ship is charging past
+  80% or has just fired (`dtClamp` in `aliens-demo.ts`'s `frame()`), since a
+  0.2s clamp alone can still swallow the ~0.22s laser zap whole in one slow
+  frame.
+- **Round 2 (coordinator review fixes, same session)**: four points raised,
+  all addressed in the same worktree without touching `Game.ts` or any
+  concurrently-edited file:
+  1. *Targeting the visible hemisphere* — `InvasionController.tick(dt, viewDir)`
+     now takes a globe-local `Vec3` (same "camera position in globe-local
+     space" trick as Solar Flare) and `pickImpactTarget()` samples within a
+     widening cone of it (`sampleCone()`, uniform-over-spherical-cap) instead
+     of the whole sphere. The `shipSpawned` event now carries `target: BeadRef
+     | null`, chosen at spawn (not arrival) so the render layer can plan the
+     whole approach around a point already known to be visible.
+  2. *Ship visuals* — `aliens.ts`'s hull is now a `LatheGeometry` saucer
+     profile (not a squashed sphere) with a procedural canvas panel-line
+     texture, two swept fin pods with engine-glow tips, an underside ring of
+     8 pulsing glow sprites (cyan→orange with charge, chasing pulse), and a
+     glass canopy dome. `aliens-demo.ts`'s `computeApproachPath()` places the
+     hover point on the camera→target ray (screen-safe-clamped in NDC space,
+     extra headroom at the top edge) so the ship is always fully on-screen
+     and visibly hovers between the camera and what it's about to shoot.
+  3. *Fire look* — `DemoGlobe.updateFireFlicker()` (the `BeadGlobe`
+     reference implementation, and the exact snippet in
+     `docs/INVASION_INTEGRATION.md`) now layers a two-frequency per-bead
+     flicker (dim ember red → hot orange-yellow) under a fading white ignite
+     pulse (~0.45s) on newly-lit beads. `src/render/fireEmbers.ts` (new) is a
+     pooled rising-ember-spark + faint-smoke particle system, parented under
+     the same rotating frame as the beads; dead pool slots fade their vertex
+     color to black under additive blending rather than needing visibility
+     bookkeeping.
+  4. *Fire-spread visibility* — the ignite pulse above (point 3) doubles as
+     the "newly-ignited beads flash" the review asked for.
+  Re-verified via a fresh screenshot set in `scratchpad/invasion2/` (kept
+  alongside, not replacing, the original `scratchpad/invasion/`).
+
 ## Open items
 
 - iOS platform (`npx cap add ios`) and its GitHub Actions workflow — needs
@@ -209,3 +301,7 @@ as rust with darker basins, matching the GDD.
 - Release signing (Android keystore, iOS certificates/provisioning).
 - App store listings (Play Store, App Store).
 - Monetization.
+- Alien invasion feature (above) is built but not wired into `Game.ts` yet —
+  see `docs/INVASION_INTEGRATION.md`. Also needs: the `BeadGlobe` fire
+  addition, an `invasion` `UnlockId`/tutorial entry, and EN/TR tutorial
+  copy landing wherever the localization pass in progress puts strings.

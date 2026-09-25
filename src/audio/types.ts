@@ -20,4 +20,11 @@ export type SfxName =
   | 'starGain'
   | 'win'
   | 'lose'
-  | 'warp';
+  | 'warp'
+  // Alien invasion (src/game/invasion.ts + src/render/aliens.ts).
+  | 'shipArrive'
+  | 'laserCharge'
+  | 'laserFire'
+  | 'fireCrackle'
+  | 'extinguish'
+  | 'shipExplode';

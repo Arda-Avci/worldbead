@@ -434,6 +434,198 @@ function warp(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
   return Math.max(d1, 0.55 + d2) + 0.05;
 }
 
+// ---------------- alien invasion (src/game/invasion.ts + src/render/aliens.ts) ----------------
+
+function shipArrive(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
+  // Descending sci-fi swell: a filtered noise whoosh under a detuned falling drone.
+  const d1 = playNoise(ctx, dest, {
+    start: t,
+    duration: 0.55,
+    attack: 0.1,
+    decay: 0.45,
+    peak: 0.3,
+    filterType: 'bandpass',
+    freq: 1800,
+    freqEnd: 300,
+    q: 0.8,
+  });
+  const d2 = playTone(ctx, dest, {
+    type: 'sawtooth',
+    freq: 180,
+    freqEnd: 90,
+    start: t,
+    attack: 0.08,
+    decay: 0.5,
+    peak: 0.22,
+    detuneCents: jitterCents(10),
+    release: 0.1,
+  });
+  const d3 = playTone(ctx, dest, {
+    type: 'sawtooth',
+    freq: 181.5,
+    freqEnd: 91,
+    start: t,
+    attack: 0.08,
+    decay: 0.5,
+    peak: 0.14,
+    detuneCents: jitterCents(10) - 8,
+    release: 0.1,
+  });
+  return Math.max(d1, d2, d3) + 0.03;
+}
+
+function laserCharge(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
+  // Rising whine that builds over the ~1s telegraph window, ending right as the shot fires.
+  const d1 = playTone(ctx, dest, {
+    type: 'sawtooth',
+    freq: 260,
+    freqEnd: 1400,
+    start: t,
+    attack: 0.9,
+    decay: 0.05,
+    peak: 0.28,
+    release: 0.02,
+  });
+  const d2 = playNoise(ctx, dest, {
+    start: t,
+    duration: 0.95,
+    attack: 0.9,
+    decay: 0.05,
+    peak: 0.12,
+    filterType: 'highpass',
+    freq: 3000,
+    q: 0.6,
+  });
+  return Math.max(d1, d2) + 0.02;
+}
+
+function laserFire(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
+  // Sharp descending zap with a noise crack.
+  const d1 = playTone(ctx, dest, {
+    type: 'square',
+    freq: 1900,
+    freqEnd: 220,
+    start: t,
+    attack: 0.001,
+    decay: 0.16,
+    peak: 0.32,
+    release: 0.03,
+  });
+  const d2 = playNoise(ctx, dest, {
+    start: t,
+    duration: 0.03,
+    attack: 0.001,
+    decay: 0.025,
+    peak: 0.4,
+    filterType: 'highpass',
+    freq: 2500,
+    q: 0.8,
+  });
+  return Math.max(d1, d2) + 0.02;
+}
+
+function fireCrackle(ctx: BaseAudioContext, dest: AudioNode, t: number, intensity: number): number {
+  // Short crackling-ember burst; retriggered periodically by the integration
+  // layer while any fire beads remain, so no loop transport is needed here.
+  const i = clamp01(intensity);
+  const d1 = playNoise(ctx, dest, {
+    start: t,
+    duration: 0.35,
+    attack: 0.02,
+    decay: 0.3,
+    peak: 0.22 + i * 0.1,
+    filterType: 'bandpass',
+    freq: 1200,
+    freqEnd: 2600,
+    q: 2.2,
+  });
+  // A couple of tiny random pops layered in for a "crackle" texture.
+  const d2 = playNoise(ctx, dest, {
+    start: t + 0.05 + Math.random() * 0.08,
+    duration: 0.02,
+    attack: 0.001,
+    decay: 0.018,
+    peak: 0.18,
+    filterType: 'highpass',
+    freq: 3500,
+  });
+  const d3 = playNoise(ctx, dest, {
+    start: t + 0.15 + Math.random() * 0.1,
+    duration: 0.02,
+    attack: 0.001,
+    decay: 0.018,
+    peak: 0.14,
+    filterType: 'highpass',
+    freq: 4200,
+  });
+  return Math.max(d1, d2, d3) + 0.02;
+}
+
+function extinguish(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
+  // Steam hiss: a bright-to-dull noise sweep with a soft low thump underneath.
+  const d1 = playNoise(ctx, dest, {
+    start: t,
+    duration: 0.4,
+    attack: 0.01,
+    decay: 0.35,
+    peak: 0.4,
+    filterType: 'bandpass',
+    freq: 4500,
+    freqEnd: 500,
+    q: 0.7,
+  });
+  const d2 = playTone(ctx, dest, {
+    type: 'sine',
+    freq: 160,
+    freqEnd: 80,
+    start: t + 0.02,
+    attack: 0.01,
+    decay: 0.2,
+    peak: 0.2,
+  });
+  return Math.max(d1, 0.02 + d2) + 0.03;
+}
+
+function shipExplode(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
+  const d1 = playNoise(ctx, dest, {
+    start: t,
+    duration: 0.5,
+    attack: 0.004,
+    decay: 0.45,
+    peak: 0.55,
+    filterType: 'lowpass',
+    freq: 2200,
+    freqEnd: 250,
+    q: 0.6,
+  });
+  const d2 = playTone(ctx, dest, {
+    type: 'sine',
+    freq: 100,
+    freqEnd: 35,
+    start: t,
+    attack: 0.006,
+    decay: 0.4,
+    peak: 0.6,
+    release: 0.12,
+  });
+  // A few debris crackles trailing the main boom.
+  let maxEnd = Math.max(d1, d2);
+  for (let i = 0; i < 4; i++) {
+    const start = t + 0.08 + i * (0.06 + Math.random() * 0.05);
+    const d = playNoise(ctx, dest, {
+      start,
+      duration: 0.03,
+      attack: 0.001,
+      decay: 0.025,
+      peak: 0.15,
+      filterType: 'highpass',
+      freq: 1800 + Math.random() * 1200,
+    });
+    maxEnd = Math.max(maxEnd, start - t + d);
+  }
+  return maxEnd + 0.04;
+}
+
 /**
  * Builds a sound effect graph starting at `startTime` on `ctx`, connected to
  * `dest`. Works with a live AudioContext or an OfflineAudioContext.
@@ -477,6 +669,18 @@ export function buildSfx(
       return lose(ctx, dest, startTime);
     case 'warp':
       return warp(ctx, dest, startTime);
+    case 'shipArrive':
+      return shipArrive(ctx, dest, startTime);
+    case 'laserCharge':
+      return laserCharge(ctx, dest, startTime);
+    case 'laserFire':
+      return laserFire(ctx, dest, startTime);
+    case 'fireCrackle':
+      return fireCrackle(ctx, dest, startTime, intensity);
+    case 'extinguish':
+      return extinguish(ctx, dest, startTime);
+    case 'shipExplode':
+      return shipExplode(ctx, dest, startTime);
     default: {
       const exhaustive: never = name;
       throw new Error(`Unknown SfxName: ${exhaustive}`);
