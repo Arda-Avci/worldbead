@@ -70,8 +70,9 @@ export class AudioEngine {
     if (this.activeVoices >= MAX_VOICES) return; // voice limiting to avoid pileup/clipping
 
     const intensity = opts?.intensity ?? 0.5;
+    const planet = this.currentTrack?.planet ?? this.desiredPlanet ?? 'earth';
     this.activeVoices += 1;
-    const duration = buildSfx(ctx, sfxBus, name, ctx.currentTime, intensity);
+    const duration = buildSfx(ctx, sfxBus, name, ctx.currentTime, intensity, planet);
     const releaseMs = Math.max(10, duration * 1000 + 60);
     setTimeout(() => {
       this.activeVoices = Math.max(0, this.activeVoices - 1);

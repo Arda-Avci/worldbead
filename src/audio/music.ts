@@ -10,14 +10,14 @@
 // - The offline render test calls it directly (with duration = 20s) against
 //   an OfflineAudioContext, with no timers involved at all.
 import type { PlanetId } from './types';
-import { mulberry32, whiteNoiseBuffer } from './dsp';
+import { mulberry32, whiteNoiseBuffer, stepToHz } from './dsp';
 
 interface MoodConfig {
-  /** Root note in Hz for the pad. */
+  /** Root/drone frequency in Hz for the pad, tuned to a Solfeggio-family pitch. */
   root: number;
-  /** Chord progression: each chord is a list of semitone offsets from root. */
+  /** Chord progression: each chord is a list of scale-step offsets from root (see `stepToRatio`). */
   chords: number[][];
-  /** Scale used by the arpeggio, semitone offsets from root (one octave up). */
+  /** Scale used by the arpeggio, scale-step offsets from root (one octave up, see `stepToRatio`). */
   scale: number[];
   padWave: OscillatorType;
   arpWave: OscillatorType;
@@ -33,14 +33,14 @@ interface MoodConfig {
   /** Quiet filtered-noise texture level (0 disables it). */
   noiseLevel: number;
   noiseFilterHz: number;
+  /** Slow binaural-style beat rate in Hz (theta/alpha range) for the pad's lowest voice. */
+  binauralBeatHz: number;
 }
-
-const semitoneToHz = (root: number, semitones: number): number => root * Math.pow(2, semitones / 12);
 
 export const PLANET_MOODS: Record<PlanetId, MoodConfig> = {
   // Warm, hopeful major pad.
   earth: {
-    root: 220, // A3
+    root: 264, // Solfeggio 528 Hz (transformation/love), octave down for a warm low pad
     chords: [
       [0, 4, 7, 11],
       [5, 9, 12, 16],
@@ -59,10 +59,11 @@ export const PLANET_MOODS: Record<PlanetId, MoodConfig> = {
     arpRestChance: 0.35,
     noiseLevel: 0,
     noiseFilterHz: 800,
+    binauralBeatHz: 6, // alpha range, relaxed alertness
   },
   // Sparse, cold, mostly open fifths and rests.
   moon: {
-    root: 330, // E4
+    root: 396, // Solfeggio 396 Hz (liberating fear/guilt) — cold, sparse
     chords: [
       [0, 7, 12],
       [-5, 0, 7],
@@ -81,10 +82,11 @@ export const PLANET_MOODS: Record<PlanetId, MoodConfig> = {
     arpRestChance: 0.6,
     noiseLevel: 0.012,
     noiseFilterHz: 3000,
+    binauralBeatHz: 4, // deep theta, cold/sparse stillness
   },
   // Thick, hazy, close clusters through a heavy lowpass.
   venus: {
-    root: 196, // G3
+    root: 159.75, // Solfeggio 639 Hz (connection) two octaves down — thick, warm drone
     chords: [
       [0, 5, 7, 10],
       [3, 8, 10, 15],
@@ -103,10 +105,11 @@ export const PLANET_MOODS: Record<PlanetId, MoodConfig> = {
     arpRestChance: 0.5,
     noiseLevel: 0.02,
     noiseFilterHz: 500,
+    binauralBeatHz: 7, // high alpha, hazy calm
   },
   // Dusty, minor, sparse pentatonic arps over a low drone.
   mars: {
-    root: 174.61, // F3
+    root: 208.5, // Solfeggio 417 Hz (facilitating change), octave down — dusty low drone
     chords: [
       [0, 3, 7],
       [5, 8, 12],
@@ -125,6 +128,7 @@ export const PLANET_MOODS: Record<PlanetId, MoodConfig> = {
     arpRestChance: 0.45,
     noiseLevel: 0.018,
     noiseFilterHz: 700,
+    binauralBeatHz: 5, // low alpha/theta border, grounding
   },
   // Deep, majestic, slow-moving drone with a wide sparse arp — the 5th cycle body.
   jupiter: {
@@ -168,9 +172,10 @@ function schedulePad(
   const release = duration * 0.5;
   const holdEnd = startTime + duration - duration * 0.1;
   const perNoteLevel = mood.padLevel / chord.length;
+  const lowestStep = Math.min(...chord);
 
-  chord.forEach((semitone) => {
-    const freq = semitoneToHz(mood.root, semitone);
+  chord.forEach((step) => {
+    const freq = stepToHz(mood.root, step);
     [-1, 1].forEach((sign) => {
       const osc = ctx.createOscillator();
       osc.type = mood.padWave;
@@ -197,6 +202,47 @@ function schedulePad(
       osc.stop(startTime + duration + release + 0.1);
     });
   });
+
+  // Gentle, always-on binaural-style layer: the lowest voice gets a detuned twin
+  // 4-8 Hz apart (theta/alpha beat range), panned hard left/right at low level.
+  scheduleBinauralTwin(ctx, dest, mood, stepToHz(mood.root, lowestStep), startTime, duration, attack, release, holdEnd);
+}
+
+function scheduleBinauralTwin(
+  ctx: BaseAudioContext,
+  dest: AudioNode,
+  mood: MoodConfig,
+  baseFreq: number,
+  startTime: number,
+  duration: number,
+  attack: number,
+  release: number,
+  holdEnd: number,
+): void {
+  const halfBeat = mood.binauralBeatHz / 2;
+  const level = mood.padLevel * 0.18;
+
+  ([-1, 1] as const).forEach((sign) => {
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(baseFreq + sign * halfBeat, startTime);
+
+    const panner = ctx.createStereoPanner();
+    panner.pan.setValueAtTime(sign * 0.85, startTime);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, startTime);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, level), startTime + attack);
+    gain.gain.setValueAtTime(Math.max(0.0001, level), holdEnd);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration + release);
+    gain.gain.setValueAtTime(0, startTime + duration + release + 0.05);
+
+    osc.connect(panner);
+    panner.connect(gain);
+    gain.connect(dest);
+    osc.start(startTime);
+    osc.stop(startTime + duration + release + 0.1);
+  });
 }
 
 function scheduleArpeggio(
@@ -212,7 +258,7 @@ function scheduleArpeggio(
     if (rng() < mood.arpRestChance) continue;
     const t = startTime + i * mood.arpStep;
     const degree = mood.scale[Math.floor(rng() * mood.scale.length)];
-    const freq = semitoneToHz(mood.root * 2, degree);
+    const freq = stepToHz(mood.root * 2, degree);
 
     const osc = ctx.createOscillator();
     osc.type = mood.arpWave;
