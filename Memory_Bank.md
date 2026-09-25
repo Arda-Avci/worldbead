@@ -825,3 +825,68 @@ Every column of radii is strictly decreasing top-to-bottom (monotonic
 shrink with level) and strictly decreasing left-to-right within a row
 (coarser outside, finer inside, same level) — verified by direct
 computation from `getLevel()`, not eyeballed from screenshots.
+
+## Jupiter banding + "dark globe on revisit" (owner review round 2)
+
+- **Jupiter still read as one blob, not bands.** The texture
+  (`generateJupiterBands`/`generateProceduralBandsTexture`) already painted
+  ~2.25 full cycles of its 8-color latitude palette (verified by direct
+  computation of `bandF` vs `y`), so the raw texture *was* banded. The bug
+  was downstream, in `BeadGlobe.ts`'s bead-painting pipeline:
+  `mergeToRegionTarget()` repeatedly merges the smallest connected color
+  region into its dominant neighbor until at most `regionTarget` connected
+  regions remain, and `regionTarget` is sized for continent-style planets
+  (as low as ~7 at Jupiter's first-ever level, 41). Jupiter's bands form
+  ~18 separate connected rings (8 colors × ~2.25 cycles, each ring
+  physically separated from same-colored rings by a different-colored
+  ring in between), so a target of 7 collapsed nearly all of them into one
+  or two surviving blobs — exactly the "single rust patch on a cream ball"
+  the owner's screenshot showed. Fixed with a planet-aware region floor in
+  `BeadGlobe.ts` (`regionFloor = cfg.planet === 'jupiter' ? 28 : 3`, in the
+  `regionShare` closure used by every shell): 28 sits comfortably above the
+  ~18 natural rings, so the merge step never has anything to do on
+  Jupiter — every ring survives at every level/layer, verified by
+  screenshots (`after4/level41_jupiter_5s.png`, `_20s.png`,
+  `level200_jupiter_5s.png`, `_20s.png`) showing 6+ clearly alternating
+  horizontal bands persisting through auto-spin, at both Jupiter's first
+  visit and its 4th (level 200, 3 layers). Side effect: Jupiter's shot
+  budget (`probes = ceil(regions * shotSlack)`, from `countRegions()`) is
+  now honestly higher than before on Jupiter specifically, since it now
+  reflects the real ~18-28 regions instead of an artificially-collapsed
+  count — flagged here in case a future difficulty pass wants to
+  compensate with a lower `shotSlack` specifically for banded planets, but
+  left as-is since the owner's ask was about the visual, not difficulty.
+- **Earth "dark and dull" on levels 51/151 vs level 2 — was not a bead or
+  lighting bug at all.** Instrumented `SpaceScene.ts` with a temporary
+  dev-only per-2-second light-state log and confirmed `gameplayBlend`
+  converges to ~0.99 (bright, camera-relative lighting) within under a
+  second whenever the camera is actually in the `'gameplay'` shot — so the
+  cross-fade mechanism itself was already correct. The actual cause: level
+  51 and 151 are each the *first level of a new planet slot* (every 10th
+  level), which triggers the post-win `'hero'` shot (a deliberately
+  moodier, fixed-Sun-only reveal used right after a win, while the
+  `newPlanet`/`levelComplete` cards are shown) — and the player can linger
+  on that "Welcome to Earth" card indefinitely. `updateGameplayLighting`
+  only cross-faded to the bright camera-relative light for `'gameplay'`,
+  leaving `'hero'` at the dramatic, fixed-direction-only look for as long
+  as the card stayed up. Confirmed directly: a Playwright run that opened
+  `?skipIntro=1&level=151`, found and clicked the card's real
+  `[data-scrim] [data-primary]` button (my earlier QA script's selector
+  wait was too short and silently missed the button, which is why my
+  *own* first round of `after3` screenshots also showed the dim look —
+  same underlying `'hero'`-shot cause, not a separate bug), then
+  screenshotted: before the click, dim/moody; after the click (which just
+  advances the shot state, no lighting code touched), instantly bright —
+  proving the globe/material/bead code was never the problem. Fixed with
+  one line in `updateGameplayLighting`'s `target` calc: cross-fade to the
+  bright camera-relative light for `'hero'` too, not just `'gameplay'`
+  (`src/render/SpaceScene.ts`). Only the brief, skippable intro-only shots
+  (`deepSpace`/`approach`/`sunPass`) keep the moodier fixed-Sun look now,
+  since nothing the player stops and reads happens during those. Verified
+  with fresh screenshots at both 5s and 20s of auto-spin for levels 51 and
+  151 (`after4/level51_5s.png`, `_20s.png`, `level151_5s.png`, `_20s.png`)
+  — all four now match level 2's brightness/vividness.
+- Both fixes were verified with real screenshots (`scratchpad/after4/`,
+  never committed to the repo) rather than assumed from code reading
+  alone, per the pattern this project has needed twice now (owner
+  screenshots catching things code review missed).
