@@ -975,3 +975,66 @@ verified (see the two "Alien invasion" sections above) — everything the
 plan doc proposed (call sequence, config constants, tutorial copy, visual
 fixes) is implemented as described, so the doc had nothing left to say that
 this file doesn't already cover.
+
+## Venus was unplayable — blown-out white blob (owner review round 4)
+
+Round 3's Venus ΔE fix (above) was numerically real but visually
+insufficient — the owner's own screenshot showed a genuinely unplayable
+near-white blob, not just a merely-okay one. Three independent causes, all
+fixed together:
+
+1. **Atmosphere glow.** `PLANET_DATA.venus.atmosphereIntensity` was 1.1 —
+   the highest of any planet (Earth 1.0, Jupiter 0.6, Mars 0.45, Moon 0.08)
+   — with an atmosphere color (`0xf2d9a0`) already close to white. Even
+   before the globe is "revealed" this Fresnel rim glow runs at 40% strength
+   (`setRevealed`'s unrevealed multiplier), so it was contributing real
+   brightness throughout ordinary gameplay, not just at the reveal moment.
+   Dropped to 0.45 and darkened the glow color a shade (`0xe0b878`) —
+   `src/render/planetData.ts`.
+2. **Bloom pass.** The shared `UnrealBloomPass` (strength 0.85 globally) had
+   never been a problem on any other planet because no other planet's
+   *average* palette brightness pushes so much of the frame over the bloom
+   threshold at once. Rather than dim bloom for every planet (which would
+   flatten highlights that were fine on Earth/Jupiter/Mars), added a
+   per-planet bloom-strength table (`BLOOM_STRENGTH_BY_PLANET`, default
+   0.85, Venus 0.4) applied in `SpaceScene.loadPlanet()` — `src/render/SpaceScene.ts`.
+3. **Bead/cloud material.** Venus's entire visible gameplay surface *is*
+   its cloud shell at every level (`cfg.cloud === 'always'`, unlike Earth
+   where the shared "glossy pearl early game -> fluffy late game" curve only
+   applies briefly). At Venus's early levels that curve still gives a high
+   clearcoat (~0.6+) and near-full opacity — glossy highlights on an already
+   bright, always-visible surface. Added a Venus-specific override in
+   `BeadGlobe.ts`'s cloud-shell setup that ignores the shared fluffiness
+   curve entirely: fixed low clearcoat (0.12), higher roughness (0.8), fully
+   opaque/matte, low envMapIntensity (0.1) — regardless of level.
+4. **Pattern didn't span the visible disk.** Separately (this is the actual
+   *readability* fix, not just brightness): `buildVenusCloudPaint()` used to
+   split purely on `|lat|` (an equatorial band vs. everything else). On the
+   camera's normal gameplay framing — roughly equatorial, auto-spin turning
+   around the same axis that split is defined on — the "everything else"
+   tone rarely rotated into view, so with the OLD near-duplicate palette
+   this read as a flat ball, and even with round 3's separated 2-tone
+   palette it would have read as "one color with an occasional stripe," not
+   multiple visible classes. Replaced with a longitude-sheared-by-latitude
+   noise pattern (mimicking the real Y/chevron-shaped cloud bands Venus's
+   fast equatorial winds produce) so every latitude — including whatever's
+   framed at any spin phase — shows a mix of all three tones. Also went
+   from 2 tones to 3 (`VENUS_CLOUD_PALETTE = [0xf5e6b8, 0xcf9a4e,
+   0x74451a]` — pale cloud-top yellow, ochre-tan, dark rust-brown; every
+   pair ≥30 ΔE), matching the owner's "cloud-top pale yellow/tan swirls
+   over ochre/orange-brown lowlands+highlands" reference. One numeric trap
+   worth remembering: `fbm3`'s multi-octave averaging does *not* spread
+   evenly over [0,1] — empirically it clusters tightly around ~0.485 (p33
+   ≈ 0.448, p66 ≈ 0.52) — so naive evenly-spaced thresholds (0.42/0.68)
+   starved the darkest class down to ~1% of the sphere, invisible in
+   practice, even though the palette itself was correct. Fixed by picking
+   thresholds from the empirical distribution instead of the nominal
+   output range; verified ~25-50% share per class across several seeds
+   before touching a screenshot.
+
+Verified with real screenshots this time before reporting (per the
+standing lesson in this project: a numeric fix without a screenshot check
+is not a verified fix) — `scratchpad/after6/level{31,35,40}_{5s,20s}.png`
+all show individually-legible glossy-but-not-blown-out beads in three
+clearly distinct classes, against a clean dark starfield background, at
+every checkpoint level and both wait times.

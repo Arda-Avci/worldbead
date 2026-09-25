@@ -31,6 +31,22 @@ const AXIAL_TILT_DEG: Record<PlanetId, number> = {
   jupiter: 3.1,
 };
 
+/**
+ * Bloom strength per planet (default 0.85, applied in `loadPlanet`). Venus's own bright
+ * cream/tan bead palette plus its atmosphere glow was pushing a huge share of the frame over
+ * the bloom threshold, washing both the globe and the background starfield out to a near-white
+ * haze (owner bug report) — every other planet's darker average palette never triggers this.
+ * Rather than lower the shared bloom pass for every planet (which would dull Jupiter's/Earth's
+ * highlights that were never a problem), it's tuned down specifically while Venus is loaded.
+ */
+const BLOOM_STRENGTH_BY_PLANET: Record<PlanetId, number> = {
+  earth: 0.85,
+  moon: 0.85,
+  venus: 0.4,
+  mars: 0.85,
+  jupiter: 0.85,
+};
+
 export class SpaceScene {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene: THREE.Scene;
@@ -191,6 +207,7 @@ export class SpaceScene {
 
   async loadPlanet(id: PlanetId): Promise<void> {
     this.spin.quaternion.setFromEuler(new THREE.Euler(0, 0, THREE.MathUtils.degToRad(AXIAL_TILT_DEG[id])));
+    this.bloomPass.strength = BLOOM_STRENGTH_BY_PLANET[id];
     const env = await this.envReady;
     await this.planetBody.load(id, env);
   }

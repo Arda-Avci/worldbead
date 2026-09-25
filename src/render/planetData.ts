@@ -32,8 +32,12 @@ export const PLANET_DATA: Record<PlanetId, PlanetDef> = {
   },
   venus: {
     map: 'textures/venus_surface.jpg',
-    atmosphereColor: 0xf2d9a0,
-    atmosphereIntensity: 1.1,
+    atmosphereColor: 0xe0b878,
+    // Was 1.1 (the highest of any planet) — stacked with Venus's own bright cream/tan bead
+    // palette and shared bloom pass, its Fresnel rim glow was blowing the whole globe out to a
+    // featureless white blob (owner bug report). Also darkened the glow color itself a shade
+    // (was a near-white f2d9a0) so it contributes less raw brightness on top of the beads.
+    atmosphereIntensity: 0.45,
     thickClouds: true,
   },
   mars: {

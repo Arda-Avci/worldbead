@@ -521,24 +521,44 @@ function buildEarthCloudPaint(dirs: Float32Array, img: ImageDataLike, nbrStart: 
 }
 
 // Owner requirement (round 3): the ΔE≥20(->30) readability pass must apply to
-// every planet, but Venus's "surface" is this fixed 2-tone constant, not a
-// texture run through `readablePalette()`, so it needs the same bar applied
-// by hand. The old pair (0xf6ecd2, 0xdcc48a) was only ~23 ΔE apart — both
-// very light creams that bloom/tonemap could (and did, per the owner's
-// screenshot) wash into a near-uniform white ball. Widened to ~38 ΔE while
-// staying in the same warm-cream family (no grey/blue introduced).
-const VENUS_CLOUD_PALETTE = [0xf6ecd2, 0xb8905a]; // at most 2 tones
+// every planet, but Venus's "surface" is this fixed constant, not a texture
+// run through `readablePalette()`, so it needs the same bar applied by hand.
+// The original pair (0xf6ecd2, 0xdcc48a) was only ~23 ΔE apart — both very
+// light creams that bloom/tonemap washed into a near-uniform white ball. Now
+// 3 tones spanning pale cloud-top yellow through ochre to a dark rust-brown
+// (real Venus radar/UV imagery: cloud-top pale yellow/tan swirls over
+// ochre/orange-brown lowlands+highlands) — every pair measures ≥30 ΔE.
+const VENUS_CLOUD_PALETTE = [0xf5e6b8, 0xcf9a4e, 0x74451a];
 
-/** Venus: procedural cream bands, always present (no real cloud texture for Venus). */
+/**
+ * Venus: procedural cloud-top swirl pattern, always present (no real cloud
+ * texture for Venus). Round 3 owner bug report: the original version split
+ * purely on `|lat|` (equator vs. poles), so on a typical gameplay framing —
+ * camera roughly equatorial, auto-spin turning around the same axis the
+ * latitude split is defined on — the second tone almost never rotated into
+ * view, reading as a near-uniform ball. This shears longitude by latitude
+ * (mimicking the real Y/chevron-shaped cloud bands Venus's fast equatorial
+ * winds actually produce) before noise-thresholding into 3 classes, so every
+ * latitude band — including whatever's on screen at any spin phase — shows
+ * a mix of all 3 tones instead of concentrating one near the poles.
+ */
 function buildVenusCloudPaint(dirs: Float32Array, seed: number): Int16Array {
   const n = dirs.length / 3;
   const out = new Int16Array(n);
   for (let i = 0; i < n; i++) {
     const x = dirs[i * 3], y = dirs[i * 3 + 1], z = dirs[i * 3 + 2];
     const lat = Math.asin(Math.max(-1, Math.min(1, y)));
-    const wobble = (fbm3(x * 3, y * 3, z * 3, seed) - 0.5) * 0.5;
-    const band = Math.abs(lat) + wobble;
-    out[i] = band < 0.5 ? 0 : 1;
+    const lon = Math.atan2(z, x);
+    const shear = lon + lat * 2.4;
+    const swirl = fbm3(Math.cos(shear) * 2.2, y * 2.2, Math.sin(shear) * 2.2, seed);
+    const fine = fbm3(x * 5, y * 5, z * 5, seed + 11);
+    const v = swirl * 0.75 + fine * 0.25;
+    // `fbm3`'s multi-octave averaging clusters its output tightly around ~0.485 (empirically
+    // sampled: p33≈0.448, p66≈0.52, far from a uniform [0,1] spread), so naive evenly-spaced
+    // thresholds (e.g. 0.42/0.68) starved the darkest class down to ~1% of the sphere — visually
+    // absent. These thresholds are picked from that empirical distribution instead, so all 3
+    // classes stay reasonably present (verified ~25-50% each across several seeds).
+    out[i] = v < 0.45 ? 0 : v < 0.515 ? 1 : 2;
   }
   return out;
 }
@@ -735,6 +755,20 @@ export class BeadGlobe implements GlobeAdapter {
       cloudMat.roughness = THREE.MathUtils.lerp(0.4, 0.85, fluff);
       cloudMat.clearcoat = THREE.MathUtils.lerp(0.75, 0.1, fluff);
       cloudMat.depthWrite = fluff <= 0.001;
+      if (cfg.planet === 'venus') {
+        // Venus's cloud shell *is* its entire visible gameplay surface at every level (unlike
+        // Earth, which only shows early-game glossy-pearl clouds briefly before they fluff up) —
+        // the shared early-game glossy settings above, stacked with Venus's own bright palette
+        // and atmosphere glow, is exactly what blew the globe out to a featureless white blob
+        // (owner bug report). Always matte/opaque here regardless of the global fluffiness
+        // curve, so individual beads and color classes stay legible at every Venus level.
+        cloudMat.clearcoat = 0.12;
+        cloudMat.roughness = 0.8;
+        cloudMat.transparent = false;
+        cloudMat.opacity = 1;
+        cloudMat.depthWrite = true;
+        cloudMat.envMapIntensity = 0.1;
+      }
       this.cloudMaterial = cloudMat;
 
       const clouds = this.makeShell('clouds', cloudDirs, cStart, cList, cColorIdx, cPalette, cloudRadius, cfg.cloudBeadCount, cfg.seed + 2, cloudMat);
