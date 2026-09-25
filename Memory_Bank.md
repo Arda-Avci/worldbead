@@ -1364,3 +1364,36 @@ sources** stacking on top of each other, not one bug:
    #4 in the original session does fire correctly at a live layer
    transition, confirming that part of the original fix worked as
    intended.
+
+## CI build signing + build identification (this session)
+
+Fixed a real installed-app problem: `.github/workflows/android.yml` builds
+a debug APK on every push, but each fresh GitHub runner used to generate
+its own throwaway debug keystore (default Gradle behavior with no
+`signingConfig` on the `debug` build type), so consecutive CI builds were
+signed with different keys and `versionCode` was hardcoded to `1`. On the
+owner's phone, installing a newer APK over the old one hit Android's
+signature-mismatch install failure, so he kept running a stale build
+without an error message explaining why.
+
+- Generated one fixed debug keystore with `keytool` (standard Android
+  debug values: alias `androiddebugkey`, store/key password `android`,
+  `CN=Android Debug,O=Android,C=US`, 10000 days validity) and committed it
+  at `android/app/debug.keystore`. Added a narrow `.gitignore` negation
+  (`!android/app/debug.keystore`) since the repo has a blanket
+  `*.keystore` rule. `android/app/build.gradle` now has an explicit
+  `signingConfigs.debug` pointing at it, so every CI build (and every
+  local debug build) is signed with the same key and installs cleanly
+  over the previous one.
+- `versionCode`/`versionName` in `android/app/build.gradle` now read
+  `GITHUB_RUN_NUMBER` (fallback `1` locally) instead of being hardcoded,
+  so `versionCode` actually increases across CI builds — required for
+  Android to even offer an upgrade install.
+- Added a tiny, low-opacity "build N · sha7" label (`.wb-build-label` in
+  `src/ui/gameui.ts`/`ui.css`) in the corner of the logo/title screen
+  (`wb-logo-layer`, hidden once gameplay starts) so the owner can see at a
+  glance which build is running. Value comes from a `__BUILD_LABEL__`
+  compile-time constant injected by `vite.config.ts`'s `define` from
+  `GITHUB_RUN_NUMBER`/`GITHUB_SHA` (both workflows run in GitHub Actions,
+  which sets these automatically), falling back to `"dev"` for local
+  builds; declared in `src/global.d.ts`.

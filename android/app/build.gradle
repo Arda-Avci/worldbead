@@ -1,5 +1,10 @@
 apply plugin: 'com.android.application'
 
+// CI (see .github/workflows/android.yml) sets GITHUB_RUN_NUMBER, which
+// increases on every workflow run; a local build falls back to 1 so
+// versionCode always increases across CI builds instead of staying at 1.
+def ciBuildNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()
+
 android {
     namespace = "com.ardaavci.worldbead"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +12,8 @@ android {
         applicationId "com.ardaavci.worldbead"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode ciBuildNumber
+        versionName "1.0.${ciBuildNumber}"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,7 +21,23 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        debug {
+            // Fixed, committed debug keystore (android/app/debug.keystore) so
+            // every CI build is signed with the same key and installs over
+            // the previous debug build instead of hitting a signature
+            // conflict (each fresh GitHub runner would otherwise generate
+            // its own debug keystore).
+            storeFile file("debug.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'

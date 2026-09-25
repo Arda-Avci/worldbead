@@ -16,3 +16,6 @@ ios/App/App/public/
 ios/DerivedData/
 *.keystore
 *.jks
+# Fixed debug keystore, committed on purpose so every CI build is signed
+# with the same key and installs over the previous build.
+!android/app/debug.keystore

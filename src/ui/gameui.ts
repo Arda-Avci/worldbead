@@ -108,6 +108,7 @@ export class GameUI {
         <div class="wb-logo-word">WORLDBEAD</div>
         <div class="wb-logo-sub">${S.logoSub}</div>
         <div class="wb-logo-tap">${S.tapToBegin}</div>
+        <div class="wb-build-label">${__BUILD_LABEL__}</div>
       </div>
 
       <button class="wb-skip-btn wb-glass wb-hidden" type="button" data-skip>${S.skip}</button>

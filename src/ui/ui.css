@@ -743,6 +743,19 @@
 }
 @keyframes wb-tap-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
 
+/* Owner-facing build identifier so he can tell which CI build he's running;
+   tiny and low-opacity so it stays out of the way of the actual UI. */
+.wb-build-label {
+  position: absolute;
+  left: calc(10px + var(--wb-safe-l));
+  bottom: calc(8px + var(--wb-safe-b));
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--wb-text-dim);
+  opacity: 0.35;
+  pointer-events: none;
+}
+
 /* ---------------------------------------------------------------- skip */
 
 .wb-skip-btn {
