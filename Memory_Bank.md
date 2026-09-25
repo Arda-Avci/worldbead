@@ -1275,3 +1275,92 @@ dist/` after `npm run build`) before touching any code, per the standing
    (the ΔE-10 clamp applies identically to every planet's palette) rather
    than an independent visual check — flagging honestly rather than
    claiming a screenshot I don't have.
+
+## Follow-up: white glare/bloom blob on the globe, and toast verification (this session)
+
+Owner-reported follow-up after the five bugs above: a screenshot
+(`bugs/boundary_L55_mid.png`) showed a large blown-out white glare blob at
+the top of the globe. Turned out to be **three separate, independent
+sources** stacking on top of each other, not one bug:
+
+1. **`SpaceScene`'s Sun-glow sprite never reached true zero opacity.**
+   `updateGameplayLighting()` faded `sunGlow`'s opacity via
+   `lerp(0.9, 0.08, blend)` and clamped it to `Math.min(baseOpacity, 0.08)`
+   when overlapping the globe — both formulas floor at 0.08, never 0, even
+   though the Sun disc mesh and Lensflare *do* correctly go fully
+   `visible = false` in the same states (confirmed via a new
+   `SpaceScene.debugSunState()` diagnostic, exposed as
+   `__wbQA.sunState()`: `sunMeshVisible`/`sunFlareVisible` false,
+   `sunGlowOpacity` pinned ~0.08 throughout gameplay). A 34-unit additive
+   sprite at 0.08 opacity, amplified by bloom, still reads as a visible
+   glow. **Fix**: `lerp(0.9, 0, blend)` and `opacity = sunOverlap ? 0 :
+   baseOpacity` — the sprite now truly disappears when the Sun disc/flare
+   do.
+2. **`sunOverlapsGlobe()` used a hardcoded body radius** (`0.97 * 1.05`)
+   to decide whether the Sun would visually overlap the globe, instead of
+   the actual loaded level's outer shell radius — a planet with extra
+   layers + a cloud shell can reach well past that guess (up to ~1.15+ for
+   4-layer levels), so the overlap test could under-detect and leave the
+   Sun un-hidden right at the globe's edge. **Fix**: added
+   `BeadGlobe.outerRadius()`-backed `SpaceScene.setBodyRadius()`, called
+   once per level load from `Game.prepareLevel()`, and `sunOverlapsGlobe()`
+   now uses that real value (`* 1.05` margin for bead protrusion) instead
+   of a fixed constant.
+3. **The actual, dominant source of the reported blob**: `PlanetBody`'s
+   `revealed` field defaults to `true`, and `setBodyRevealed()` was only
+   ever called with `true` — once, at the win/hero reveal beat
+   (`Game.onWin()`). Nothing ever called it with `false` when a new
+   level's bead shells go up, so the photoreal planet body's additive
+   Fresnel-rim atmosphere shell (`createAtmosphereMaterial`,
+   `AdditiveBlending`, no depth write) rendered at full intensity
+   underneath/around the bead shell for the entire game, on every level
+   after the player's very first win. Most of the globe hid it fine (the
+   opaque bead shell occludes it), but right at the globe's limb — where
+   the shell's Fresnel term peaks and gaps between discrete beads are
+   largest, especially near the poles — it showed through, and the bloom
+   pass turned that into the large blown-out white halo from the bug
+   report. Diagnosed by bisection: disabling the whole `UnrealBloomPass`
+   made the blob vanish entirely (confirmed it was bloom-driven, not a
+   separate always-on glow object), then toggling `PlanetBody`'s
+   `atmosphere.visible` by hand isolated the atmosphere shell as (part of)
+   the source. **Fix**: `Game.prepareLevel()` now calls
+   `this.scene.setBodyRevealed(false)` right after building each new
+   level's globe (the counterpart to `setBodyRevealed(true)` in
+   `onWin()`), and `PlanetBody.setRevealed()` now also sets
+   `atmosphere.visible = v` (it previously only dimmed the shader's
+   intensity uniform to 40%, never hiding the mesh outright).
+   Also found and fixed, while isolating the above: the same lighting
+   stack (fixed-direction `sunLight` blending down to only 1.0, not lower,
+   *plus* the camera-relative `gameplayLight` ramping up to 1.9 — the two
+   can point in similar directions for some camera orientations and add
+   together on the same patch) could still push an ordinary well-lit
+   white/cream bead cluster over the bloom threshold on its own. Retuned
+   the gameplay-blend targets down (`sunLight` 1.0 → 0.4, `gameplayLight`
+   1.9 → 1.6) so no single bead patch reads overexposed even under
+   `UnrealBloomPass`'s default threshold — verified this was necessary and
+   sufficient by first trying threshold/smoothWidth tweaks on
+   `UnrealBloomPass` alone (`threshold` 0.82 → 1.6, `smoothWidth` 0.01 →
+   0.3), which did **not** remove the blob, before finding the real
+   per-source causes above; those postprocessing tweaks were reverted once
+   the actual causes were fixed, per YAGNI.
+   Verified via `scratchpad/bugs2/final_L55.png` (Earth L55, after 60 real
+   probe shots + FX settle time) and `scratchpad/bugs2/boundary_L35_mid.png`
+   (Venus L35) — beads read with normal shading/specular, no blown-out
+   halo at the globe's limb in either case; Sun disc visible off to the
+   side on Venus (correctly non-overlapping, not hidden) with a normal,
+   non-blown highlight.
+4. **"Layer cleared" toast verified at a live transition.** Added a
+   QA-only `__wbQA.forceKillOuterLayer()` hook (dev-only, stripped from
+   production like every other `__wbQA` entry — `grep __wbQA dist/` stays
+   empty) that zeroes a level's outer `layer` shell's `alive` array and
+   calls `updateHud()`, to reach a real 1→2 `layerProgress()` transition
+   without grinding through hundreds of real shots in an automated test
+   (a real-shot attempt on level 45's ~840-bead outer layer did not finish
+   within a multi-minute budget under SwiftShader's software rendering —
+   noted honestly rather than skipped). Result: `layerProgress()` went
+   `{current:1,total:2}` → `{current:2,total:2}`, and
+   `__wbQA.toastState()` read immediately after showed
+   `{text: "Katman tamamlandı!", shown: true}` — the toast added for bug
+   #4 in the original session does fire correctly at a live layer
+   transition, confirming that part of the original fix worked as
+   intended.

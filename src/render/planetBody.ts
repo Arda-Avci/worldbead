@@ -169,6 +169,12 @@ export class PlanetBody {
   setRevealed(v: boolean): void {
     this.revealed = v;
     if (this.cloudMesh) this.cloudMesh.visible = v;
+    // Bug: the additive Fresnel-rim atmosphere shell used to stay visible (just dimmed to 40%)
+    // even while hidden, so its rim glow could still peek past the bead shell's silhouette
+    // (most visible right at the globe's limb/poles, where gaps between discrete beads are
+    // largest) and, stacked with the bloom pass, read as a blown-out white glare blob during
+    // ordinary gameplay. It is only meant to be seen for the win/hero photoreal-planet reveal.
+    if (this.atmosphere) this.atmosphere.visible = v;
     const atmoMat = this.atmosphere?.material as THREE.ShaderMaterial | undefined;
     if (atmoMat) atmoMat.uniforms.uIntensity.value = this.baseAtmoIntensity * (v ? 1 : 0.4);
   }

@@ -81,6 +81,14 @@ export class SpaceScene {
   /** 0 = dramatic fixed sun-direction lighting (intro/hero/sunPass/approach), 1 = flat camera-relative
    *  gameplay lighting. Smoothly tracks whichever shot the camera rig is currently in/flying to. */
   private gameplayBlend = 0;
+  /** Outermost radius of the currently loaded bead globe (surface/layers/clouds — whichever
+   *  reaches furthest), set by `setBodyRadius()` once per level load. Used by `sunOverlapsGlobe()`
+   *  so the Sun-hiding test matches the globe's real visual extent instead of a fixed guess: a
+   *  planet with extra layers and a cloud shell can reach well past the bare-surface radius, and
+   *  under-estimating it let the Sun glow sit right at the globe's edge without being detected as
+   *  "overlapping" and hidden. Defaults to a reasonable bare-surface guess before the first level
+   *  loads. */
+  private bodyRadius = 0.97 * 1.05;
   private readonly envReady: Promise<THREE.Texture | null>;
   private readonly appliedShake = new THREE.Vector3();
   private elapsed = 0;
@@ -346,9 +354,9 @@ export class SpaceScene {
     this.gameplayLight.position.copy(keyDir.multiplyScalar(50));
     this.gameplayLight.target.position.set(0, 0, 0);
 
-    this.sunLight.intensity = THREE.MathUtils.lerp(3.4, 1.0, blend);
+    this.sunLight.intensity = THREE.MathUtils.lerp(3.4, 0.4, blend);
     this.fillLight.intensity = THREE.MathUtils.lerp(0.24, 0.5, blend);
-    this.gameplayLight.intensity = THREE.MathUtils.lerp(0, 1.9, blend);
+    this.gameplayLight.intensity = THREE.MathUtils.lerp(0, 1.6, blend);
 
     const sunHiddenByBlend = blend >= 0.5;
     const sunOverlap = this.sunOverlapsGlobe();
@@ -356,8 +364,20 @@ export class SpaceScene {
     if (this.sunMesh) this.sunMesh.visible = !sunHidden;
     if (this.sunFlare) this.sunFlare.visible = !sunHidden;
     if (this.sunGlow) {
-      const baseOpacity = THREE.MathUtils.lerp(0.9, 0.08, blend);
-      (this.sunGlow.material as THREE.SpriteMaterial).opacity = sunOverlap ? Math.min(baseOpacity, 0.08) : baseOpacity;
+      // Bug: this used to floor at 0.08 (lerp(0.9, 0.08, blend), and
+      // Math.min(baseOpacity, 0.08) when overlapping) instead of reaching
+      // true zero. A 34-unit additive sprite at 0.08 opacity, amplified by
+      // the bloom pass, still reads as a large blown-out white glare blob
+      // sitting on/behind the globe once the camera settles into the
+      // 'gameplay'/'hero' shot (blend -> 1) or whenever the Sun's fixed
+      // world direction happens to project near the globe on screen. The
+      // Sun disc/flare are correctly fully hidden in that state (their
+      // opacity/visible go to 0/false) so the glow sprite must too —
+      // fading it all the way to 0 removes the blowout while still letting
+      // it read as a soft glow during the non-gameplay shots (blend -> 0,
+      // baseOpacity -> 0.9) where it never overlaps the globe.
+      const baseOpacity = THREE.MathUtils.lerp(0.9, 0, blend);
+      (this.sunGlow.material as THREE.SpriteMaterial).opacity = sunOverlap ? 0 : baseOpacity;
     }
   }
 
@@ -374,13 +394,33 @@ export class SpaceScene {
     const toGlobe = new THREE.Vector3(0, 0, 0).sub(camPos);
     const dist = toGlobe.length();
     toGlobe.normalize();
-    const bodyRadius = 0.97 * 1.05; // bead shell radius margin
+    const bodyRadius = this.bodyRadius;
     const angularRadius = Math.asin(THREE.MathUtils.clamp(bodyRadius / Math.max(dist, bodyRadius + 0.001), 0, 1));
     const angle = Math.acos(THREE.MathUtils.clamp(toSun.dot(toGlobe), -1, 1));
     return angle < angularRadius + THREE.MathUtils.degToRad(4);
   }
 
+  /** Called once per level load with the just-built globe's outermost shell radius (see
+   *  `BeadGlobe.outerRadius()`), so `sunOverlapsGlobe()` hides the Sun against this globe's
+   *  actual visual size rather than a fixed guess. `margin` widens it slightly (beads themselves
+   *  extend a bit past their shell's nominal radius). */
+  setBodyRadius(radius: number, margin = 1.05): void {
+    this.bodyRadius = radius * margin;
+  }
+
   render(): void {
     this.composer.render();
+  }
+
+  /** QA-only diagnostic (see `Game.ts`'s dev-only `__wbQA` hook): current shot/blend/sun visibility state. */
+  debugSunState(): { shot: string; blend: number; sunOverlap: boolean; sunMeshVisible: boolean; sunFlareVisible: boolean; sunGlowOpacity: number } {
+    return {
+      shot: this.cameraRig.currentShot,
+      blend: this.gameplayBlend,
+      sunOverlap: this.sunOverlapsGlobe(),
+      sunMeshVisible: this.sunMesh?.visible ?? false,
+      sunFlareVisible: this.sunFlare?.visible ?? false,
+      sunGlowOpacity: this.sunGlow ? (this.sunGlow.material as THREE.SpriteMaterial).opacity : 0,
+    };
   }
 }

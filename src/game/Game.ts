@@ -230,6 +230,23 @@ export class Game {
         aliveBreakdown: () => this.qaAliveBreakdown(),
         grazingCloudHitTest: () => this.qaGrazingCloudHitTest(),
         fireAtCurrentProbeDirect: () => this.qaFireAtCurrentProbeDirect(),
+        layerProgress: () => this.globe?.layerProgress() ?? null,
+        sunState: () => this.scene.debugSunState(),
+        toastState: () => {
+          const el = this.canvas.parentElement?.querySelector('[data-toast]');
+          return el ? { text: el.textContent, shown: el.classList.contains('wb-show') } : null;
+        },
+        // QA-only: instantly clears the outermost body shell (bypassing normal shot-by-shot
+        // play) so a real layer transition — and the `updateHud()` toast it triggers — can be
+        // observed without grinding through hundreds of real shots in an automated test.
+        forceKillOuterLayer: () => {
+          if (!this.globe) return null;
+          const outer = this.globe.shells.find((s) => s.kind === 'layer');
+          if (!outer) return null;
+          outer.alive.fill(0);
+          this.updateHud();
+          return this.globe.layerProgress();
+        },
       };
     }
 
@@ -452,6 +469,18 @@ export class Game {
     globe.group.visible = false;
     this.levelTotalBeads = globe.aliveCount();
     this.lastLayerShown = 0;
+    this.scene.setBodyRadius(globe.outerRadius());
+    // Bug: `PlanetBody.revealed` defaults to `true` and `setBodyRevealed()` was only ever called
+    // with `true` (at the win/hero reveal beat) — never back to `false` when a new level's beads
+    // go up. That left the photoreal planet body's additive Fresnel-rim atmosphere glow (and its
+    // own cloud mesh) rendering at full intensity underneath/around the bead shell throughout
+    // ordinary gameplay, on every level after the very first win. Most of the globe hid it fine
+    // (opaque beads occlude it), but right at the globe's limb — where the Fresnel term peaks and
+    // gaps between discrete beads are largest, especially near the poles — it showed through as a
+    // large blown-out white glare blob (owner bug report). Hiding it again here, as soon as this
+    // level's beads are ready to be shown, is the counterpart to the `setBodyRevealed(true)` call
+    // in `onWin()`.
+    this.scene.setBodyRevealed(false);
 
     this.applyUnlocks(cfg.level);
     const powers = this.buildPowerStates();
