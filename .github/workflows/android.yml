@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -43,3 +46,16 @@ jobs:
         with:
           name: worldbead-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
+
+      - name: Publish latest debug APK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/debug/*.apk worldbead-debug.apk
+          git tag -f latest-debug
+          git push -f origin latest-debug
+          gh release view latest-debug >/dev/null 2>&1 || \
+            gh release create latest-debug --prerelease --title "Latest debug APK" \
+              --notes "Automatically updated on every push to main."
+          gh release upload latest-debug worldbead-debug.apk#worldbead-debug.apk --clobber
