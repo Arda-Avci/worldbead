@@ -132,7 +132,7 @@ export const PLANET_MOODS: Record<PlanetId, MoodConfig> = {
   },
   // Deep, majestic, slow-moving drone with a wide sparse arp — the 5th cycle body.
   jupiter: {
-    root: 130.81, // C3
+    root: 142.5, // Solfeggio 285 Hz (restoration) an octave down: deep, majestic drone
     chords: [
       [0, 3, 7, 10],
       [-2, 5, 8, 12],
@@ -151,6 +151,7 @@ export const PLANET_MOODS: Record<PlanetId, MoodConfig> = {
     arpRestChance: 0.55,
     noiseLevel: 0.01,
     noiseFilterHz: 400,
+    binauralBeatHz: 4.5, // theta, slow and vast
   },
 };
 
