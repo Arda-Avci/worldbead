@@ -99,6 +99,30 @@ class SparkSystem {
     return this.points;
   }
 
+  /**
+   * A single slow-drifting, short-lived spark at `worldPos` — used every
+   * frame by a flying probe to lay down a comet-tail trail (reuses this
+   * same pooled buffer/draw call, no new geometry per shot).
+   */
+  emitTrailDot(worldPos: THREE.Vector3, color: THREE.Color): void {
+    const idx = this.cursor;
+    this.cursor = (this.cursor + 1) % this.capacity;
+    const jitter = () => (Math.random() * 2 - 1) * 0.02;
+    this.positions[idx * 3 + 0] = worldPos.x + jitter();
+    this.positions[idx * 3 + 1] = worldPos.y + jitter();
+    this.positions[idx * 3 + 2] = worldPos.z + jitter();
+    this.velocities[idx * 3 + 0] = 0;
+    this.velocities[idx * 3 + 1] = 0;
+    this.velocities[idx * 3 + 2] = 0;
+    this.colors[idx * 3 + 0] = color.r;
+    this.colors[idx * 3 + 1] = color.g;
+    this.colors[idx * 3 + 2] = color.b;
+    const ml = 0.22;
+    this.maxLife[idx] = ml;
+    this.life[idx] = ml;
+    this.sizes[idx] = 2.6;
+  }
+
   emit(worldPos: THREE.Vector3, color: THREE.Color, intensity: number): void {
     const count = Math.round(THREE.MathUtils.clamp(18 + intensity * 40, 10, 90));
     for (let i = 0; i < count; i++) {
@@ -237,10 +261,10 @@ class ProbeSystem {
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
-      opacity: 0.55,
+      opacity: 0.75,
     });
     const halo = new THREE.Sprite(haloMat);
-    halo.scale.setScalar(0.14);
+    halo.scale.setScalar(0.18);
     halo.layers.enable(BLOOM_LAYER);
     root.add(halo);
 
@@ -251,9 +275,10 @@ class ProbeSystem {
     const trailMat = new THREE.LineBasicMaterial({
       color: c,
       transparent: true,
-      opacity: 0.6,
+      opacity: 0.85,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
+      linewidth: 2,
     });
     const trail = new THREE.Line(trailGeo, trailMat);
     trail.frustumCulled = false;
@@ -287,8 +312,13 @@ class ProbeSystem {
     this.records.splice(idx, 1);
   }
 
-  update(_dt: number): void {
+  private pulseClock = 0;
+
+  update(dt: number): void {
+    this.pulseClock += dt;
+    const pulse = 1 + Math.sin(this.pulseClock * 14) * 0.12;
     for (const rec of this.records) {
+      rec.halo.scale.setScalar(0.18 * pulse);
       const p = rec.group.position;
       const w = rec.trailWrite * 3;
       // Shift history back by writing into a ring buffer sampled at head.
@@ -317,18 +347,133 @@ class ProbeSystem {
   }
 }
 
-/** Owns all pooled FX: sparks, shockwaves and probes. */
+/**
+ * Pooled instanced-mesh debris: popped beads that detach and tumble away
+ * rather than just shrinking in place (item #11). One draw call for every
+ * spilling bead on screen; slots recycle round-robin so a burst of pops
+ * never allocates.
+ */
+class DebrisSystem {
+  readonly mesh: THREE.InstancedMesh;
+  private readonly capacity: number;
+  private readonly pos: Float32Array;
+  private readonly vel: Float32Array;
+  private readonly quat: Float32Array; // xyzw per slot
+  private readonly spinAxis: Float32Array; // xyz per slot
+  private readonly spinSpeed: Float32Array;
+  private readonly life: Float32Array;
+  private readonly maxLife: Float32Array;
+  private readonly baseScale: Float32Array;
+  private cursor = 0;
+  private readonly tmpM = new THREE.Matrix4();
+  private readonly tmpQ = new THREE.Quaternion();
+  private readonly tmpDQ = new THREE.Quaternion();
+  private readonly tmpV = new THREE.Vector3();
+  private readonly tmpS = new THREE.Vector3();
+  private readonly tmpAxis = new THREE.Vector3();
+  private readonly tmpC = new THREE.Color();
+
+  constructor(capacity = 160) {
+    this.capacity = capacity;
+    this.pos = new Float32Array(capacity * 3);
+    this.vel = new Float32Array(capacity * 3);
+    this.quat = new Float32Array(capacity * 4);
+    this.spinAxis = new Float32Array(capacity * 3);
+    this.spinSpeed = new Float32Array(capacity);
+    this.life = new Float32Array(capacity);
+    this.maxLife = new Float32Array(capacity);
+    this.baseScale = new Float32Array(capacity);
+
+    const geo = new THREE.SphereGeometry(1, 7, 5);
+    const mat = new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.05 });
+    this.mesh = new THREE.InstancedMesh(geo, mat, capacity);
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.mesh.frustumCulled = false;
+    this.tmpM.makeScale(0, 0, 0);
+    for (let i = 0; i < capacity; i++) this.mesh.setMatrixAt(i, this.tmpM);
+    this.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Detach a popped bead at `worldPos`, tumbling away along `outward` (+ some downward pull), then fading. */
+  spawn(worldPos: THREE.Vector3, color: number, outward: THREE.Vector3, radius: number): void {
+    const idx = this.cursor;
+    this.cursor = (this.cursor + 1) % this.capacity;
+    this.pos[idx * 3] = worldPos.x;
+    this.pos[idx * 3 + 1] = worldPos.y;
+    this.pos[idx * 3 + 2] = worldPos.z;
+
+    const dir = outward.clone().normalize();
+    dir.x += (Math.random() * 2 - 1) * 0.5;
+    dir.y += (Math.random() * 2 - 1) * 0.5 - 0.35; // extra pull down the screen, per spec
+    dir.z += (Math.random() * 2 - 1) * 0.5;
+    dir.normalize();
+    const speed = 0.9 + Math.random() * 1.1;
+    this.vel[idx * 3] = dir.x * speed;
+    this.vel[idx * 3 + 1] = dir.y * speed;
+    this.vel[idx * 3 + 2] = dir.z * speed;
+
+    this.tmpAxis.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1).normalize();
+    this.spinAxis[idx * 3] = this.tmpAxis.x;
+    this.spinAxis[idx * 3 + 1] = this.tmpAxis.y;
+    this.spinAxis[idx * 3 + 2] = this.tmpAxis.z;
+    this.spinSpeed[idx] = 5 + Math.random() * 7;
+    this.quat[idx * 4] = 0; this.quat[idx * 4 + 1] = 0; this.quat[idx * 4 + 2] = 0; this.quat[idx * 4 + 3] = 1;
+
+    this.maxLife[idx] = 0.6 + Math.random() * 0.35;
+    this.life[idx] = this.maxLife[idx];
+    this.baseScale[idx] = Math.max(0.004, radius);
+    this.tmpC.setHex(color);
+    this.mesh.setColorAt(idx, this.tmpC);
+    if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
+  }
+
+  update(dt: number): void {
+    const gravity = -1.8; // pull "down the screen" as the debris tumbles and fades
+    let any = false;
+    for (let i = 0; i < this.capacity; i++) {
+      if (this.life[i] <= 0) continue;
+      any = true;
+      this.life[i] -= dt;
+      if (this.life[i] <= 0) {
+        this.tmpM.makeScale(0, 0, 0);
+        this.mesh.setMatrixAt(i, this.tmpM);
+        continue;
+      }
+      this.vel[i * 3 + 1] += gravity * dt;
+      this.pos[i * 3] += this.vel[i * 3] * dt;
+      this.pos[i * 3 + 1] += this.vel[i * 3 + 1] * dt;
+      this.pos[i * 3 + 2] += this.vel[i * 3 + 2] * dt;
+
+      this.tmpAxis.set(this.spinAxis[i * 3], this.spinAxis[i * 3 + 1], this.spinAxis[i * 3 + 2]);
+      this.tmpDQ.setFromAxisAngle(this.tmpAxis, this.spinSpeed[i] * dt);
+      this.tmpQ.set(this.quat[i * 4], this.quat[i * 4 + 1], this.quat[i * 4 + 2], this.quat[i * 4 + 3]);
+      this.tmpQ.premultiply(this.tmpDQ);
+      this.quat[i * 4] = this.tmpQ.x; this.quat[i * 4 + 1] = this.tmpQ.y; this.quat[i * 4 + 2] = this.tmpQ.z; this.quat[i * 4 + 3] = this.tmpQ.w;
+
+      const t = this.life[i] / this.maxLife[i];
+      const s = this.baseScale[i] * t; // shrink alongside the tumble/fall = the "fade"
+      this.tmpV.set(this.pos[i * 3], this.pos[i * 3 + 1], this.pos[i * 3 + 2]);
+      this.tmpS.setScalar(s);
+      this.tmpM.compose(this.tmpV, this.tmpQ, this.tmpS);
+      this.mesh.setMatrixAt(i, this.tmpM);
+    }
+    if (any) this.mesh.instanceMatrix.needsUpdate = true;
+  }
+}
+
+/** Owns all pooled FX: sparks, shockwaves, probes and pop debris. */
 export class FxSystem {
   readonly root = new THREE.Group();
   private readonly sparks = new SparkSystem();
   private readonly shock = new ShockwaveSystem();
   private readonly probes = new ProbeSystem();
+  private readonly debris = new DebrisSystem();
   private shakeStrength = 0;
   private shakeDecay = 4;
   readonly shakeOffset = new THREE.Vector3();
 
   constructor() {
-    this.root.add(this.sparks.object, this.shock.group, this.probes.group);
+    this.root.add(this.sparks.object, this.shock.group, this.probes.group, this.debris.mesh);
   }
 
   burst(worldPos: THREE.Vector3, color: number, intensity: number): void {
@@ -336,6 +481,17 @@ export class FxSystem {
     this.sparks.emit(worldPos, c, intensity);
     this.shock.spawn(worldPos, c, 0.35 + intensity * 0.5);
   }
+
+  /** Spill a popped bead off the globe: detach, tumble away and fall, then fade (item #11). */
+  spillBead(worldPos: THREE.Vector3, color: number, outward: THREE.Vector3, radius: number): void {
+    this.debris.spawn(worldPos, color, outward, radius);
+  }
+
+  /** Comet-tail trail dot for a flying probe (see SparkSystem.emitTrailDot). */
+  probeTrailDot(worldPos: THREE.Vector3, color: number): void {
+    this.sparks.emitTrailDot(worldPos, this.trailColor.set(color));
+  }
+  private readonly trailColor = new THREE.Color();
 
   createProbe(color: number): THREE.Object3D {
     return this.probes.create(color);
@@ -353,6 +509,7 @@ export class FxSystem {
     this.sparks.update(dt);
     this.shock.update(dt);
     this.probes.update(dt);
+    this.debris.update(dt);
 
     if (this.shakeStrength > 0.0001) {
       this.shakeStrength = Math.max(0, this.shakeStrength - this.shakeDecay * dt * this.shakeStrength);

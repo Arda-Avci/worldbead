@@ -126,6 +126,28 @@ export const PLANET_MOODS: Record<PlanetId, MoodConfig> = {
     noiseLevel: 0.018,
     noiseFilterHz: 700,
   },
+  // Deep, majestic, slow-moving drone with a wide sparse arp — the 5th cycle body.
+  jupiter: {
+    root: 130.81, // C3
+    chords: [
+      [0, 3, 7, 10],
+      [-2, 5, 8, 12],
+      [3, 7, 10, 14],
+      [0, 5, 8, 12],
+    ],
+    scale: [0, 2, 3, 5, 7, 8, 10, 12],
+    padWave: 'sawtooth',
+    arpWave: 'triangle',
+    padFilterHz: 750,
+    padDetuneCents: 10,
+    arpFilterHz: 2400,
+    arpStep: 1.4,
+    padLevel: 0.08,
+    arpLevel: 0.03,
+    arpRestChance: 0.55,
+    noiseLevel: 0.01,
+    noiseFilterHz: 400,
+  },
 };
 
 function hashPlanet(planet: PlanetId): number {

@@ -13,6 +13,65 @@ import {
 
 const loader = new THREE.TextureLoader();
 
+/**
+ * Paints the same banded-gas-giant look as `game/texture.ts`'s
+ * `generateJupiterBands` (kept as a separate small copy per this module's
+ * "no cross-folder imports" contract), but as a `THREE.CanvasTexture` for
+ * the revealed 3D body — no network download for the 5th cycle planet.
+ */
+function generateProceduralBandsTexture(width = 512, height = 256): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+  const bandColors: [number, number, number][] = [
+    [0xd8, 0xb3, 0x83],
+    [0xc9, 0x9a, 0x66],
+    [0xe6, 0xcf, 0xa8],
+    [0xb0, 0x7a, 0x4c],
+    [0xe8, 0xd9, 0xbc],
+    [0x9c, 0x66, 0x3f],
+  ];
+  // Cheap deterministic hash noise (no shared noise util across module boundaries).
+  const hash = (x: number, y: number): number => {
+    const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  };
+  const img = ctx.createImageData(width, height);
+  for (let y = 0; y < height; y++) {
+    const lat = 1 - (y / (height - 1)) * 2;
+    const bandF = (lat * 9 + 9) % bandColors.length;
+    const bandLo = bandColors[Math.floor(bandF) % bandColors.length];
+    const bandHi = bandColors[(Math.floor(bandF) + 1) % bandColors.length];
+    const bandT = bandF - Math.floor(bandF);
+    for (let x = 0; x < width; x++) {
+      const n = hash(x * 0.06, y * 0.18) * 0.5 + hash(x * 0.02, y * 0.4) * 0.5;
+      let r = bandLo[0] + (bandHi[0] - bandLo[0]) * bandT;
+      let g = bandLo[1] + (bandHi[1] - bandLo[1]) * bandT;
+      let b = bandLo[2] + (bandHi[2] - bandLo[2]) * bandT;
+      const shade = 1 + (n - 0.5) * 0.22;
+      r *= shade; g *= shade; b *= shade;
+      const spotDist = Math.hypot(((x / width) * Math.PI * 2 - 4.2) * 1.6, (lat + 0.28) * 3.2);
+      if (spotDist < 0.55) {
+        const t = 1 - spotDist / 0.55;
+        r = r * (1 - t) + 0xc1 * t;
+        g = g * (1 - t) + 0x5a * t;
+        b = b * (1 - t) + 0x3c * t;
+      }
+      const o = (y * width + x) * 4;
+      img.data[o] = Math.max(0, Math.min(255, Math.round(r)));
+      img.data[o + 1] = Math.max(0, Math.min(255, Math.round(g)));
+      img.data[o + 2] = Math.max(0, Math.min(255, Math.round(b)));
+      img.data[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 function loadColorTexture(url: string): Promise<THREE.Texture> {
   return new Promise((resolve, reject) => {
     loader.load(
@@ -49,7 +108,7 @@ export class PlanetBody {
 
     const def = PLANET_DATA[id];
     const bodyGeo = createPlanetGeometry(PLANET_BODY_RADIUS, 96, 48);
-    const dayTex = await loadColorTexture(def.map);
+    const dayTex = def.proceduralBands ? generateProceduralBandsTexture() : await loadColorTexture(def.map);
 
     this.isEarth = id === 'earth';
     this.isVenus = id === 'venus';

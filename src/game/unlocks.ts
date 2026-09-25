@@ -2,7 +2,9 @@
 
 export type PowerId = 'meteor' | 'prism' | 'solarFlare' | 'comet';
 
-export type UnlockId = 'fire' | 'rotate' | 'swap' | PowerId | 'cloudLayer' | 'newPlanet';
+import { FIRST_CLOUD_LEVEL } from './levels';
+
+export type UnlockId = 'fire' | 'rotate' | 'swap' | PowerId | 'cloudLayer' | 'newPlanet' | 'newLayer' | 'cloudDrift';
 
 export interface UnlockEntry {
   level: number;
@@ -18,11 +20,13 @@ export const UNLOCKS: UnlockEntry[] = [
   { level: 6, id: 'meteor', tutorial: 'meteor' },
   { level: 12, id: 'prism', tutorial: 'prism' },
   { level: 25, id: 'solarFlare', tutorial: 'solarFlare' },
-  { level: 40, id: 'cloudLayer', tutorial: 'cloudLayer' },
+  // Synced to `FIRST_CLOUD_LEVEL` (item #19) rather than a separate hardcoded
+  // number, so the tutorial fires exactly when clouds first physically appear.
+  { level: FIRST_CLOUD_LEVEL, id: 'cloudLayer', tutorial: 'cloudLayer' },
   { level: 60, id: 'comet', tutorial: 'comet' },
-  { level: 351, id: 'newPlanet', tutorial: 'newPlanet' },
-  { level: 401, id: 'newPlanet', tutorial: 'newPlanet' },
-  { level: 451, id: 'newPlanet', tutorial: 'newPlanet' },
+  // 'newPlanet' is no longer a fixed level here: with the planet rotating every
+  // 10 levels (item #15) it's shown dynamically in `Game.ts` at the start of
+  // every planet slot after the first, keyed per-level like everything else.
 ];
 
 export const FREE_CHARGES_ON_UNLOCK = 3;

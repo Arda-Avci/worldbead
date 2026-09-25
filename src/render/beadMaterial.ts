@@ -36,10 +36,10 @@ export function createBeadMaterial(envMap: THREE.Texture | null): THREE.MeshPhys
     color: 0xffffff,
     metalness: 0.0,
     roughness: 0.4,
-    clearcoat: 0.6,
-    clearcoatRoughness: 0.2,
+    clearcoat: 0.75,
+    clearcoatRoughness: 0.18,
     envMap,
-    envMapIntensity: 0.6,
+    envMapIntensity: 0.22,
   });
   return mat;
 }

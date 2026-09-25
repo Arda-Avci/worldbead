@@ -84,7 +84,7 @@ async function run() {
       break;
 
     case 'failed':
-      void ui.showLevelFailed({ beadsLeft: 213 });
+      void ui.showLevelFailed({ beadsLeft: 213, retryCost: 100, continueCost: 500, canAffordContinue: true });
       break;
 
     case 'settings':

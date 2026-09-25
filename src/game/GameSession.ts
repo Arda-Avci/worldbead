@@ -12,6 +12,16 @@ export interface PowerState {
   charges: number;
 }
 
+/**
+ * Fixed stardust prices for the level-failed card's two recovery options
+ * (item #17), kept in one place: RETRY restarts the level from scratch;
+ * CONTINUE keeps the current board/progress and grants a few extra shots.
+ * Not scaled by level, per the owner's explicit "no per-level scaling".
+ */
+export const RETRY_COST = 100;
+export const CONTINUE_COST = 500;
+export const CONTINUE_EXTRA_PROBES = 5;
+
 export type SessionEvent =
   | { type: 'fire'; result: 'hit'; color: number; poppedCount: number; stardustEarned: number; combo: boolean }
   | { type: 'fire'; result: 'miss'; color: number }
@@ -186,5 +196,13 @@ export class GameSession {
   /** Total level wins including this one, once it has ended in a win. For persistence. */
   getWinsSoFar(): number {
     return this.winsSoFar;
+  }
+
+  /** Un-ends a just-lost session and grants a few extra shots, keeping the board/progress as-is (item #17's "Continue"). */
+  continueAfterLoss(): boolean {
+    if (this.ended !== 'lose') return false;
+    this.ended = null;
+    this.probes += CONTINUE_EXTRA_PROBES;
+    return true;
   }
 }

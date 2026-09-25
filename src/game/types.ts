@@ -14,6 +14,8 @@ export interface BeadRef {
 export interface PopEvent {
   position: Vec3;
   color: number;
+  /** The popped bead's own render radius, so spill/debris FX can be sized to match. */
+  radius: number;
 }
 
 /**

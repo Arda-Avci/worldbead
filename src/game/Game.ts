@@ -11,12 +11,12 @@ import { Tutorial, type ScreenCircle } from '../ui/tutorial';
 import { haptic } from '../ui/haptic';
 import type { PowerButtonState, Settings } from '../ui/types';
 import { BeadGlobe, type TextureMap, type TextureName } from './BeadGlobe';
-import { GameSession, type SessionEvent } from './GameSession';
+import { CONTINUE_COST, GameSession, RETRY_COST, type SessionEvent } from './GameSession';
 import { getLevel, MAX_LEVEL, type LevelConfig } from './levels';
 import { mulberry32 } from './noise';
 import { PLANETS, type PlanetId } from './planets';
 import { loadProgress, saveProgress, type Progress } from './progress';
-import { loadImageData, type ImageDataLike } from './texture';
+import { generateJupiterBands, loadImageData, type ImageDataLike } from './texture';
 import {
   FREE_CHARGES_ON_UNLOCK,
   POWER_IDS,
@@ -28,8 +28,9 @@ import {
   type UnlockEntry,
   type UnlockId,
 } from './unlocks';
-import { FACTS } from './facts';
+import { FACTS, randomFactFor } from './facts';
 import type { BeadRef } from './types';
+import { PLANET_NAMES, POWER_NAMES, S } from '../ui/strings';
 
 type FlowState = 'boot' | 'playing' | 'resolving';
 
@@ -41,6 +42,15 @@ interface Flight {
   dur: number;
   arcHeight: number;
   onArrive: () => void;
+  /** Probe color, used to lay down a comet-tail trail while in flight. */
+  trailColor?: number;
+  /**
+   * When set, `to` is refreshed every frame from this bead's current world
+   * position — the globe keeps spinning/tumbling (item #16) during the
+   * ~0.25s flight, so a shot must track its target bead's live position to
+   * actually land on it, not the point where it was when fired.
+   */
+  targetBead?: { shellId: number; index: number };
 }
 
 const TAP_MAX_MOVE = 10; // px
@@ -54,19 +64,22 @@ const AXIS_Y = new THREE.Vector3(0, 1, 0);
 const AXIS_X = new THREE.Vector3(1, 0, 0);
 
 const UNLOCK_INFO: Partial<Record<UnlockId, { icon: string; name: string; description: string }>> = {
-  swap: { icon: 'swap', name: 'Swap Unlocked', description: 'Swap your current and next probe colors.' },
-  meteor: { icon: 'meteor', name: 'Meteor Unlocked', description: 'Pops every bead within a radius of the impact point, any color.' },
-  prism: { icon: 'prism', name: 'Prism Unlocked', description: 'Your next probe matches any color.' },
-  solarFlare: { icon: 'solarFlare', name: 'Solar Flare Unlocked', description: 'Pops all visible-hemisphere beads of the current probe color.' },
-  comet: { icon: 'comet', name: 'Comet Unlocked', description: 'Pops a band along a great circle chosen by a swipe.' },
-  cloudLayer: { icon: 'star', name: 'Cloud Layer', description: 'Clouds now cover the surface. Pop through them to reach the beads beneath.' },
+  swap: { icon: 'swap', name: S.unlockName.swap, description: S.unlockDescription.swap },
+  meteor: { icon: 'meteor', name: S.unlockName.meteor, description: S.unlockDescription.meteor },
+  prism: { icon: 'prism', name: S.unlockName.prism, description: S.unlockDescription.prism },
+  solarFlare: { icon: 'solarFlare', name: S.unlockName.solarFlare, description: S.unlockDescription.solarFlare },
+  comet: { icon: 'comet', name: S.unlockName.comet, description: S.unlockDescription.comet },
+  cloudLayer: { icon: 'star', name: S.unlockName.cloudLayer, description: S.unlockDescription.cloudLayer },
+  newLayer: { icon: 'star', name: S.unlockName.newLayer, description: S.unlockDescription.newLayer },
+  cloudDrift: { icon: 'star', name: S.unlockName.cloudDrift, description: S.unlockDescription.cloudDrift },
 };
 
 const textureCache = new Map<string, ImageDataLike>();
 async function loadTexture(name: TextureName): Promise<ImageDataLike> {
   const cached = textureCache.get(name);
   if (cached) return cached;
-  const img = await loadImageData(`textures/${name}.jpg`);
+  // Jupiter (item #15's 5th cycle body) has no bundled real texture — painted in-canvas instead.
+  const img = name === 'jupiter' ? generateJupiterBands() : await loadImageData(`textures/${name}.jpg`);
   textureCache.set(name, img);
   return img;
 }
@@ -175,7 +188,29 @@ export class Game {
       const ev = await this.playLevel();
       if (ev.type === 'lose') {
         this.audio.play('lose');
-        await this.ui.showLevelFailed({ beadsLeft: this.globe?.aliveCount() ?? 0 });
+        const canAffordContinue = this.progress.stardust >= CONTINUE_COST;
+        const choice = await this.ui.showLevelFailed({
+          beadsLeft: this.globe?.aliveCount() ?? 0,
+          retryCost: RETRY_COST,
+          continueCost: CONTINUE_COST,
+          canAffordContinue,
+        });
+        if (choice === 'continue' && this.session) {
+          this.progress.stardust -= CONTINUE_COST;
+          saveProgress(this.progress);
+          this.audio.play('uiTap');
+          this.ui.setStardust(this.progress.stardust);
+          this.session.continueAfterLoss();
+          // Board/globe/session stay exactly as they were — just resume play with the extra shots.
+          continue;
+        }
+        const spend = Math.min(this.progress.stardust, RETRY_COST);
+        if (spend > 0) {
+          this.progress.stardust -= spend;
+          saveProgress(this.progress);
+          this.audio.play('uiTap');
+          this.ui.setStardust(this.progress.stardust);
+        }
         await this.prepareLevel(this.cfg.level);
         await this.scene.flyTo('gameplay', 0.8);
         this.globe!.group.visible = true;
@@ -202,19 +237,18 @@ export class Game {
     this.progress.level = nextLevelNum;
     saveProgress(this.progress);
 
-    if (ev.bonusPower) this.ui.showToast(`Bonus power: ${powerLabel(ev.bonusPower)}!`);
+    if (ev.bonusPower) this.ui.showToast(S.bonusPower(powerLabel(ev.bonusPower)));
 
     const nextCfg = getLevel(nextLevelNum);
     const changingPlanet = nextCfg.planet !== prevPlanet;
-    const facts = FACTS[prevPlanet];
-    const fact = facts[Math.floor(Math.random() * facts.length)];
+    const fact = randomFactFor(prevPlanet);
 
     await this.ui.showLevelComplete({
       stars: ev.stars,
       stardustEarned: ev.stardustEarned,
-      factTitle: 'Did you know?',
+      factTitle: S.didYouKnow,
       factText: fact,
-      nextPlanetName: changingPlanet ? PLANETS[nextCfg.planet].name : undefined,
+      nextPlanetName: changingPlanet ? PLANET_NAMES[nextCfg.planet] : undefined,
     });
 
     if (changingPlanet && nextLevelNum !== this.cfg.level) {
@@ -265,9 +299,9 @@ export class Game {
     await this.raceSkip(this.scene.flyTo('deepSpace', 0.01));
     if (full) {
       await this.raceSkip(this.scene.flyTo('sunPass', 3.2));
-      if (!this.skipRequested) await this.raceSkip(this.ui.showTitleBeat('4.5 billion years in the making.', 2200));
+      if (!this.skipRequested) await this.raceSkip(this.ui.showTitleBeat(S.titleBeat1, 2200));
       if (!this.skipRequested) await this.raceSkip(this.scene.flyTo('approach', 3.0));
-      if (!this.skipRequested) await this.raceSkip(this.ui.showTitleBeat('Every world is made of countless pieces.', 2200));
+      if (!this.skipRequested) await this.raceSkip(this.ui.showTitleBeat(S.titleBeat2, 2200));
     } else if (!this.skipRequested) {
       await this.raceSkip(this.scene.flyTo('approach', 1.6));
     }
@@ -313,7 +347,7 @@ export class Game {
     const token = ++this.buildToken;
     const cfg = getLevel(levelNumber);
     const planetDef = PLANETS[cfg.planet];
-    this.ui.showLoading(planetDef.name);
+    this.ui.showLoading(PLANET_NAMES[cfg.planet]);
 
     const images: TextureMap = {};
     images[planetDef.surfaceTexture as TextureName] = await loadTexture(planetDef.surfaceTexture as TextureName);
@@ -336,7 +370,7 @@ export class Game {
 
     const globe = new BeadGlobe(cfg, images, this.scene.beadMaterial);
     this.globe = globe;
-    this.scene.globe.add(globe.group);
+    this.scene.spin.add(globe.group);
     // Hidden until the caller's assemble beat (deepSpace/sunPass/approach cinematics show the
     // bare photoreal planet body first; the beads fly in and reveal themselves as a separate beat).
     globe.group.visible = false;
@@ -355,6 +389,7 @@ export class Game {
     });
     this.cfg = cfg;
     this.armedPower = null;
+    this.scene.configureSpin(cfg.seed, cfg.autoSpinEnabled, (cfg.level - 1) / (MAX_LEVEL - 1), cfg.spinTiltEnabled, cfg.spinReverseEnabled);
     this.orientToStart(cfg);
     this.updateHud();
     this.ui.hideLoading();
@@ -391,6 +426,23 @@ export class Game {
   // =============================================================== unlocks & tutorials
 
   private async runTutorialsForLevel(): Promise<void> {
+    // Dynamic, level-derived unlocks (item #15/#13): the planet rotates every
+    // `SLOT_LENGTH` levels and the layer count grows on a global curve, so
+    // neither has a fixed level number in `unlocks.ts` — detect the moment
+    // it changes relative to the previous level instead.
+    if (this.cfg.level > 1) {
+      const prev = getLevel(this.cfg.level - 1);
+      if (prev.planet !== this.cfg.planet) await this.showDynamicCard('newPlanet', this.cfg.level);
+      else if (this.cfg.layerCount > prev.layerCount) await this.showDynamicCard('newLayer', this.cfg.level);
+      // Item #19: the first level whose clouds actually drift-and-block (not just the first level with
+      // clouds at all, handled separately by the static `cloudLayer` unlock) is a genuine new mechanic —
+      // it can silently block a shot the player expects to land — so it gets its own forced tutorial too.
+      else if (this.cfg.cloudDriftEnabled && this.cfg.cloudBeadCount > 0 && !(prev.cloudDriftEnabled && prev.cloudBeadCount > 0)) {
+        await this.showDynamicCard('cloudDrift', this.cfg.level);
+      } else if (this.cfg.autoSpinEnabled && !prev.autoSpinEnabled) await this.showAutoSpinTutorial();
+      else if (this.cfg.spinTiltEnabled && !prev.spinTiltEnabled) this.showOneTimeToast('spinTilt', S.spinTiltNotice);
+      else if (this.cfg.spinReverseEnabled && !prev.spinReverseEnabled) this.showOneTimeToast('spinReverse', S.spinReverseNotice);
+    }
     for (const entry of unlocksForLevel(this.cfg.level)) {
       const key = `${entry.level}-${entry.id}`;
       if (this.progress.seenTutorials.includes(key)) continue;
@@ -402,20 +454,57 @@ export class Game {
     }
   }
 
+  /** A non-blocking one-time toast for a mechanic that doesn't change controls (item #18a/b: tilt/reverse spin). */
+  private showOneTimeToast(key: string, text: string): void {
+    const fullKey = `once-${key}`;
+    if (this.progress.seenTutorials.includes(fullKey)) return;
+    this.progress.seenTutorials.push(fullKey);
+    saveProgress(this.progress);
+    this.ui.showToast(text);
+  }
+
+  /**
+   * The first level where the idle auto-spin turns on (item #16 supersession):
+   * an interactive, unskippable tutorial — the player must actually drag the
+   * globe by `ROTATE_TUTORIAL_DEG` while the auto-spin is running (fighting
+   * it a little), not just dismiss a card, before play continues.
+   */
+  private async showAutoSpinTutorial(): Promise<void> {
+    const key = `${this.cfg.level}-autoSpin`;
+    if (this.progress.seenTutorials.includes(key)) return;
+    await this.ui.showUnlock({ icon: 'star', name: S.unlockName.autoSpin, description: S.unlockDescription.autoSpin, ctaLabel: S.tryIt });
+    this.cumulativeRotationDeg = 0;
+    const until = new Promise<void>((res) => (this.rotateTutorialResolve = res));
+    await this.tutorial.run([{ caption: S.tutorial.autoSpin, target: () => this.globeScreenCircle(), gesture: 'drag', until }]);
+    this.rotateTutorialResolve = null;
+    this.progress.seenTutorials.push(key);
+    saveProgress(this.progress);
+  }
+
+  /** Shows + runs a level-derived (not table-driven) one-time card: `newPlanet`, `newLayer` or `cloudDrift`. */
+  private async showDynamicCard(id: 'newPlanet' | 'newLayer' | 'cloudDrift', level: number): Promise<void> {
+    const key = `${level}-${id}`;
+    if (this.progress.seenTutorials.includes(key)) return;
+    const entry: UnlockEntry = { level, id, tutorial: id };
+    await this.showUnlockOrPlanetCard(entry);
+    await this.runTutorialScript(entry);
+    this.progress.seenTutorials.push(key);
+    saveProgress(this.progress);
+  }
+
   private async showUnlockOrPlanetCard(entry: UnlockEntry): Promise<void> {
     if (entry.id === 'newPlanet') {
-      const planet = PLANETS[this.cfg.planet];
       await this.ui.showUnlock({
         icon: 'star',
-        name: `Welcome to ${planet.name}`,
+        name: S.welcomeTo(PLANET_NAMES[this.cfg.planet]),
         description: FACTS[this.cfg.planet][0],
-        ctaLabel: 'Continue',
+        ctaLabel: S.continueLabel,
       });
       return;
     }
     const info = UNLOCK_INFO[entry.id];
     if (!info) return;
-    await this.ui.showUnlock({ icon: info.icon, name: info.name, description: info.description, ctaLabel: 'Try it' });
+    await this.ui.showUnlock({ icon: info.icon, name: info.name, description: info.description, ctaLabel: S.tryIt });
   }
 
   private async runTutorialScript(entry: UnlockEntry): Promise<void> {
@@ -426,7 +515,7 @@ export class Game {
         const until = new Promise<void>((res) => (this.pendingHitResolve = res));
         await this.tutorial.run([
           {
-            caption: 'Tap the glowing region to pop it.',
+            caption: S.tutorial.fire,
             target: () => this.beadScreenCircle(region) ?? this.globeScreenCircle(),
             gesture: 'tap',
             until,
@@ -439,7 +528,7 @@ export class Game {
         this.cumulativeRotationDeg = 0;
         const until = new Promise<void>((res) => (this.rotateTutorialResolve = res));
         await this.tutorial.run([
-          { caption: 'Drag to rotate the world.', target: () => this.globeScreenCircle(), gesture: 'drag', until },
+          { caption: S.tutorial.rotate, target: () => this.globeScreenCircle(), gesture: 'drag', until },
         ]);
         this.rotateTutorialResolve = null;
         break;
@@ -448,30 +537,30 @@ export class Game {
         const until = new Promise<void>((res) => (this.pendingSwapResolve = res));
         const target = this.canvas.parentElement?.querySelector('[data-swap]') as HTMLElement | null;
         if (target) {
-          await this.tutorial.run([{ caption: 'Tap swap to switch probes.', target, gesture: 'tap', until }]);
+          await this.tutorial.run([{ caption: S.tutorial.swap, target, gesture: 'tap', until }]);
         }
         this.pendingSwapResolve = null;
         break;
       }
       case 'meteor': {
-        await this.runArmThenUseTutorial('meteor', 'Tap Meteor to arm it.', 'Tap the globe to strike.', 'tap');
+        await this.runArmThenUseTutorial('meteor', S.tutorial.meteorArm, S.tutorial.meteorUse, 'tap');
         break;
       }
       case 'prism': {
         const untilArm = new Promise<void>((res) => (this.pendingPowerArmResolve = { power: 'prism', resolve: res }));
         const armTarget = this.powerButtonEl('prism');
-        if (armTarget) await this.tutorial.run([{ caption: 'Tap Prism to arm it.', target: armTarget, gesture: 'tap', until: untilArm }]);
+        if (armTarget) await this.tutorial.run([{ caption: S.tutorial.prismArm, target: armTarget, gesture: 'tap', until: untilArm }]);
         this.pendingPowerArmResolve = null;
 
         const untilHit = new Promise<void>((res) => (this.pendingHitResolve = res));
-        await this.tutorial.run([{ caption: 'Now pop any region.', target: () => this.globeScreenCircle(), gesture: 'tap', until: untilHit }]);
+        await this.tutorial.run([{ caption: S.tutorial.prismUse, target: () => this.globeScreenCircle(), gesture: 'tap', until: untilHit }]);
         this.pendingHitResolve = null;
         break;
       }
       case 'solarFlare': {
         const until = new Promise<void>((res) => (this.pendingPowerUseResolve = { power: 'solarFlare', resolve: res }));
         const target = this.powerButtonEl('solarFlare');
-        if (target) await this.tutorial.run([{ caption: 'Tap Solar Flare.', target, gesture: 'tap', until }]);
+        if (target) await this.tutorial.run([{ caption: S.tutorial.solarFlareUse, target, gesture: 'tap', until }]);
         this.pendingPowerUseResolve = null;
         break;
       }
@@ -480,7 +569,7 @@ export class Game {
         const until = new Promise<void>((res) => (this.pendingHitResolve = res));
         await this.tutorial.run([
           {
-            caption: 'Clouds now cover the surface. Pop a cloud region.',
+            caption: S.tutorial.cloudLayer,
             target: () => this.beadScreenCircle(region) ?? this.globeScreenCircle(),
             gesture: 'tap',
             until,
@@ -490,11 +579,31 @@ export class Game {
         break;
       }
       case 'comet': {
-        await this.runArmThenUseTutorial('comet', 'Tap Comet to arm it.', 'Swipe across the world.', 'swipe');
+        await this.runArmThenUseTutorial('comet', S.tutorial.cometArm, S.tutorial.cometUse, 'swipe');
         break;
       }
       case 'newPlanet':
         break;
+      case 'newLayer': {
+        const until = new Promise<void>((res) => (this.pendingHitResolve = res));
+        await this.tutorial.run([{ caption: S.tutorial.newLayer, target: () => this.globeScreenCircle(), gesture: 'tap', until }]);
+        this.pendingHitResolve = null;
+        break;
+      }
+      case 'cloudDrift': {
+        const region = this.globe!.findLargestExposedCloudRegion();
+        const until = new Promise<void>((res) => (this.pendingHitResolve = res));
+        await this.tutorial.run([
+          {
+            caption: S.tutorial.cloudDrift,
+            target: () => this.beadScreenCircle(region) ?? this.globeScreenCircle(),
+            gesture: 'tap',
+            until,
+          },
+        ]);
+        this.pendingHitResolve = null;
+        break;
+      }
     }
   }
 
@@ -538,9 +647,12 @@ export class Game {
       const dy = e.clientY - this.lastY;
       if (!this.dragging && Math.hypot(e.clientX - this.downX, e.clientY - this.downY) > TAP_MAX_MOVE) this.dragging = true;
       if (this.dragging && this.armedPower !== 'comet') {
-        this.rotateBy(dx * ROT_SPEED, dy * ROT_SPEED);
-        this.velX = dx * ROT_SPEED;
-        this.velY = dy * ROT_SPEED;
+        // Once auto-spin is active it keeps running underneath the drag (see SpaceScene.update) rather
+        // than pausing, so a drag has to "fight" it — damped in proportion to the current spin (item #16).
+        const grip = 1 - this.scene.spinResistance();
+        this.rotateBy(dx * ROT_SPEED * grip, dy * ROT_SPEED * grip);
+        this.velX = dx * ROT_SPEED * grip;
+        this.velY = dy * ROT_SPEED * grip;
       }
       this.lastX = e.clientX;
       this.lastY = e.clientY;
@@ -606,7 +718,7 @@ export class Game {
     if (color == null) return;
 
     this.audio.play('fire');
-    this.launchProbe(color, hit.point, (obj) => {
+    this.launchProbe(color, hit.point, { shellId: hit.shellId, index: hit.index }, (obj) => {
       if (!this.session || !this.globe) {
         this.disposeProbeObj(obj);
         return;
@@ -757,7 +869,7 @@ export class Game {
         case 'swap':
           break;
         case 'purchase':
-          this.ui.showToast(ev.ok ? 'Purchased!' : 'Not enough stardust');
+          this.ui.showToast(ev.ok ? S.purchased : S.notEnoughStardust);
           break;
         case 'win':
         case 'lose':
@@ -787,10 +899,13 @@ export class Game {
     const cap = 24;
     const step = Math.max(1, Math.floor(events.length / cap));
     const intensity = THREE.MathUtils.clamp(0.5 + poppedCount / 80, 0.5, 1.8);
+    const globeCenter = this.globe.group.localToWorld(new THREE.Vector3(0, 0, 0));
     for (let i = 0; i < events.length; i += step) {
       const ev = events[i];
       const world = this.globe.group.localToWorld(new THREE.Vector3(ev.position.x, ev.position.y, ev.position.z));
       this.scene.burst(world, ev.color, intensity);
+      const outward = world.clone().sub(globeCenter).normalize();
+      this.scene.spillBead(world, ev.color, outward, ev.radius);
     }
   }
 
@@ -801,7 +916,10 @@ export class Game {
     this.ui.setStardust(this.progress.stardust);
     const alive = this.globe?.aliveCount() ?? 0;
     const clearedPct = this.levelTotalBeads > 0 ? 1 - alive / this.levelTotalBeads : 0;
-    this.ui.setPlanetBadge(PLANETS[this.cfg.planet].name, this.cfg.level, clearedPct);
+    const nextIn = this.cfg.levelsUntilNextPlanet > 0
+      ? { name: PLANET_NAMES[this.cfg.nextPlanet], levels: this.cfg.levelsUntilNextPlanet }
+      : null;
+    this.ui.setPlanetBadge(PLANET_NAMES[this.cfg.planet], this.cfg.level, clearedPct, nextIn);
     const c0 = this.session.queue[0];
     const c1 = this.session.queue[1];
     this.ui.setProbeDock(c0 != null ? { color: c0, count: this.session.probes } : null, c1 != null ? { color: c1 } : null, this.session.prismArmed);
@@ -843,7 +961,17 @@ export class Game {
     return dir;
   }
 
-  /** Direction (globe-local, unit length) where the ray through (clientX, clientY) meets the bead shell sphere. */
+  /**
+   * Direction (globe-local, unit length) where the ray through (clientX, clientY) meets the
+   * bead shell sphere. A real "swipe across the world" (item #21/comet) very often starts or
+   * ends just off the globe's silhouette in screen space, where `ray.intersectSphere` legitimately
+   * finds no intersection — the ray passes the sphere entirely. Rather than fail there (which
+   * silently disarmed Comet in normal play, even though the tutorial's synthetic on-globe swipe
+   * always worked), fall back to the closest point ON the sphere to the ray, i.e. the silhouette
+   * edge point nearest the swipe — so edge-to-edge swipes resolve to a real direction. `resolveComet`
+   * still cancels the power when the two resulting directions are (nearly) coincident, which is the
+   * correct "swipe was genuinely too short" case.
+   */
   private screenToGlobeDir(clientX: number, clientY: number): THREE.Vector3 | null {
     if (!this.globe) return null;
     const rect = this.canvas.getBoundingClientRect();
@@ -851,10 +979,18 @@ export class Game {
     this.raycaster.setFromCamera(ndc, this.scene.camera);
     const centerWorld = this.globe.group.getWorldPosition(new THREE.Vector3());
     const scale = this.globe.group.getWorldScale(new THREE.Vector3()).x || 1;
-    const sphere = new THREE.Sphere(centerWorld, 1.05 * scale);
+    const radius = 1.05 * scale;
+    const sphere = new THREE.Sphere(centerWorld, radius);
     const hitPoint = new THREE.Vector3();
-    if (!this.raycaster.ray.intersectSphere(sphere, hitPoint)) return null;
-    return this.globe.group.worldToLocal(hitPoint).normalize();
+    if (this.raycaster.ray.intersectSphere(sphere, hitPoint)) {
+      return this.globe.group.worldToLocal(hitPoint).normalize();
+    }
+    const closestOnRay = new THREE.Vector3();
+    this.raycaster.ray.closestPointToPoint(centerWorld, closestOnRay);
+    const toClosest = closestOnRay.sub(centerWorld);
+    if (toClosest.lengthSq() < 1e-8) toClosest.copy(this.raycaster.ray.direction);
+    const edgePoint = centerWorld.clone().add(toClosest.normalize().multiplyScalar(radius));
+    return this.globe.group.worldToLocal(edgePoint).normalize();
   }
 
   private globeScreenCircle(): ScreenCircle | null {
@@ -963,12 +1099,22 @@ export class Game {
 
   // =============================================================== probe flights
 
-  private launchProbe(color: number, target: THREE.Vector3, onArrive: (obj: THREE.Object3D) => void): void {
+  private launchProbe(color: number, target: THREE.Vector3, targetBead: { shellId: number; index: number } | undefined, onArrive: (obj: THREE.Object3D) => void): void {
     const obj = this.scene.createProbe(color);
     this.scene.scene.add(obj);
     const from = this.scene.launcherPosition();
     obj.position.copy(from);
-    this.flights.push({ obj, from: from.clone(), to: target.clone(), t: 0, dur: 0.25, arcHeight: 0.4, onArrive: () => onArrive(obj) });
+    this.flights.push({
+      obj,
+      from: from.clone(),
+      to: target.clone(),
+      t: 0,
+      dur: 0.25,
+      arcHeight: 0.4,
+      onArrive: () => onArrive(obj),
+      trailColor: color,
+      targetBead,
+    });
   }
 
   private disposeProbeObj(obj: THREE.Object3D): void {
@@ -979,11 +1125,16 @@ export class Game {
   private updateFlights(dt: number): void {
     for (let i = this.flights.length - 1; i >= 0; i--) {
       const f = this.flights[i];
+      if (f.targetBead && this.globe) {
+        const p = this.globe.positionOf(f.targetBead.shellId, f.targetBead.index);
+        f.to.copy(this.globe.group.localToWorld(new THREE.Vector3(p.x, p.y, p.z)));
+      }
       f.t += dt;
       const u = Math.min(1, f.t / f.dur);
       const eu = u * u * (3 - 2 * u);
       f.obj.position.lerpVectors(f.from, f.to, eu);
       if (f.arcHeight > 0) f.obj.position.y += Math.sin(u * Math.PI) * f.arcHeight;
+      if (f.trailColor != null) this.scene.probeTrailDot(f.obj.position, f.trailColor);
       if (u >= 1) {
         this.flights.splice(i, 1);
         f.onArrive();
@@ -1022,14 +1173,5 @@ export class Game {
 }
 
 function powerLabel(id: PowerId): string {
-  switch (id) {
-    case 'meteor':
-      return 'Meteor';
-    case 'prism':
-      return 'Prism';
-    case 'solarFlare':
-      return 'Solar Flare';
-    case 'comet':
-      return 'Comet';
-  }
+  return POWER_NAMES[id];
 }

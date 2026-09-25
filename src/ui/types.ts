@@ -41,6 +41,11 @@ export interface LevelCompleteData {
 
 export interface LevelFailedData {
   beadsLeft: number;
+  /** Fixed price of the "Retry" option (see `RETRY_COST`); always allowed, takes whatever the player has if short. */
+  retryCost: number;
+  /** Fixed price of the "Continue" option (see `CONTINUE_COST`); only enabled when the player can afford it. */
+  continueCost: number;
+  canAffordContinue: boolean;
 }
 
 export interface UnlockData {

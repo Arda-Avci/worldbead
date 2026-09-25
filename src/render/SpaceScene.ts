@@ -3,6 +3,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
 import type { PlanetId, ShotName } from './types';
 import { createBeadMaterial } from './beadMaterial';
@@ -13,6 +14,7 @@ import type { Lensflare } from 'three/examples/jsm/objects/Lensflare.js';
 import { CameraRig } from './camera';
 import { FxSystem } from './fx';
 import { WarpEffect } from './warp';
+import { SpinDriver } from './spin';
 
 export type { PlanetId, ShotName };
 
@@ -20,11 +22,24 @@ const TEX_MILKY_WAY = 'textures/stars_milky_way.jpg';
 const TEX_SUN = 'textures/sun.jpg';
 const SUN_DIRECTION = new THREE.Vector3(0.55, 0.28, 0.78).normalize();
 
+/** Axial tilt (degrees) per planet — a stylistic constant, not to scale. */
+const AXIAL_TILT_DEG: Record<PlanetId, number> = {
+  earth: 23.4,
+  moon: 6.7,
+  venus: 2.6,
+  mars: 25.2,
+  jupiter: 3.1,
+};
+
 export class SpaceScene {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene: THREE.Scene;
   readonly camera: THREE.PerspectiveCamera;
   readonly globe: THREE.Group;
+  /** Child of `globe`: holds the planet body + bead shells, carries the planet's own axial
+   *  tilt and idle spin. `globe` itself stays purely the player's drag-controlled aim so the
+   *  idle spin never fights a drag (see `setSpinActive`). */
+  readonly spin: THREE.Group;
   readonly beadMaterial: THREE.Material;
 
   private readonly canvas: HTMLCanvasElement;
@@ -38,6 +53,12 @@ export class SpaceScene {
   private readonly sunLight: THREE.DirectionalLight;
   private readonly fillLight: THREE.HemisphereLight;
   private readonly gameplayLight: THREE.DirectionalLight;
+  private readonly ambientFloor: THREE.AmbientLight;
+  /** False for the first few levels (item #16 supersession): no automatic spin at all, only the player's drag moves the globe. */
+  private autoSpinEnabled = false;
+  private spinDifficulty = 0;
+  private readonly spinDriver = new SpinDriver(1, { difficulty: 0, tiltEnabled: false, reverseEnabled: false });
+  private readonly spinDelta = new THREE.Quaternion();
   private sunMesh: THREE.Mesh | null = null;
   private sunGlow: THREE.Sprite | null = null;
   private sunFlare: Lensflare | null = null;
@@ -60,8 +81,11 @@ export class SpaceScene {
     this.scene = new THREE.Scene();
     this.globe = new THREE.Group();
     this.scene.add(this.globe);
+    this.spin = new THREE.Group();
+    this.spin.quaternion.setFromEuler(new THREE.Euler(0, 0, THREE.MathUtils.degToRad(AXIAL_TILT_DEG.earth)));
+    this.globe.add(this.spin);
     this.planetBody.group.name = 'planetBody';
-    this.globe.add(this.planetBody.group);
+    this.spin.add(this.planetBody.group);
 
     const w = canvas.clientWidth || window.innerWidth;
     const h = canvas.clientHeight || window.innerHeight;
@@ -79,10 +103,15 @@ export class SpaceScene {
     this.sunLight = new THREE.DirectionalLight(0xfff2df, 3.4);
     this.sunLight.position.copy(SUN_DIRECTION).multiplyScalar(SUN_DISTANCE);
     this.scene.add(this.sunLight);
-    this.fillLight = new THREE.HemisphereLight(0x334466, 0x0a0a12, 0.18);
+    this.fillLight = new THREE.HemisphereLight(0x3a4d72, 0x0e0e18, 0.24);
     this.scene.add(this.fillLight);
     this.gameplayLight = new THREE.DirectionalLight(0xf3f6ff, 0);
     this.scene.add(this.gameplayLight);
+    // Small always-on rim/fill so the gameplay hemisphere never crushes to
+    // pure black at its terminator edge; kept subtle so the terminator (a
+    // deliberate realism cue) stays visible.
+    this.ambientFloor = new THREE.AmbientLight(0xffffff, 0.06);
+    this.scene.add(this.ambientFloor);
 
     // Procedural twinkling star layer (in addition to the Milky Way panorama).
     this.stars = createTwinklingStars();
@@ -109,12 +138,19 @@ export class SpaceScene {
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(new OutputPass());
 
+    // Beads get their own brighter studio-style reflection environment
+    // (RoomEnvironment) rather than the dark starfield: at bead scale the
+    // Milky Way env contributes almost no usable specular energy, so the
+    // "glossy pearl" clearcoat/reflection reads as flat matte plastic
+    // without a brighter env to catch. The planet body/atmosphere keep the
+    // realistic dark-sky environment via `scene.environment`.
+    const roomPmrem = new THREE.PMREMGenerator(this.renderer);
+    const beadEnv = roomPmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    roomPmrem.dispose();
+    (this.beadMaterial as THREE.MeshPhysicalMaterial).envMap = beadEnv;
+    (this.beadMaterial as THREE.MeshPhysicalMaterial).needsUpdate = true;
+
     this.envReady = this.initBackground();
-    this.envReady.then((env) => {
-      const mat = this.beadMaterial as THREE.MeshPhysicalMaterial;
-      mat.envMap = env;
-      mat.needsUpdate = true;
-    });
 
     this.resize();
   }
@@ -154,8 +190,35 @@ export class SpaceScene {
   }
 
   async loadPlanet(id: PlanetId): Promise<void> {
+    this.spin.quaternion.setFromEuler(new THREE.Euler(0, 0, THREE.MathUtils.degToRad(AXIAL_TILT_DEG[id])));
     const env = await this.envReady;
     await this.planetBody.load(id, env);
+  }
+
+  /**
+   * Re-seeds the idle spin's deterministic-per-level state machine (item
+   * #16, superseded): `autoSpinEnabled` is false for the first few levels —
+   * only the player's drag moves the globe — then turns on from its
+   * onboarding milestone level. `difficulty` in [0,1] scales speed/tilt/
+   * reversal-frequency once it's on. Called once per level.
+   */
+  configureSpin(seed: number, autoSpinEnabled: boolean, difficulty: number, tiltEnabled: boolean, reverseEnabled: boolean): void {
+    this.autoSpinEnabled = autoSpinEnabled;
+    this.spinDifficulty = THREE.MathUtils.clamp(difficulty, 0, 1);
+    this.spinDriver.reset(seed, { difficulty, tiltEnabled, reverseEnabled });
+  }
+
+  /**
+   * How much the player's live drag input should be damped right now
+   * (0 = full control, capped well below 1 so the globe never becomes
+   * uncontrollable): 0 whenever auto-spin is off or currently paused, and a
+   * difficulty-scaled amount while it's actively spinning — dragging then
+   * "fights" the auto-spin instead of simply overriding it, and the auto-spin
+   * resumes seamlessly on release since it never actually stopped.
+   */
+  spinResistance(): number {
+    if (!this.autoSpinEnabled || !this.spinDriver.isSpinning()) return 0;
+    return THREE.MathUtils.lerp(0.15, 0.55, this.spinDifficulty);
   }
 
   setBodyRevealed(v: boolean): void {
@@ -176,6 +239,14 @@ export class SpaceScene {
 
   burst(worldPos: THREE.Vector3, color: number, intensity: number): void {
     this.fx.burst(worldPos, color, intensity);
+  }
+
+  spillBead(worldPos: THREE.Vector3, color: number, outward: THREE.Vector3, radius: number): void {
+    this.fx.spillBead(worldPos, color, outward, radius);
+  }
+
+  probeTrailDot(worldPos: THREE.Vector3, color: number): void {
+    this.fx.probeTrailDot(worldPos, color);
   }
 
   shake(strength: number): void {
@@ -207,6 +278,10 @@ export class SpaceScene {
 
     updateTwinklingStars(this.stars, this.elapsed);
     this.planetBody.update(dt, this.elapsed, SUN_DIRECTION, this.camera);
+    // Auto-spin keeps running even while the player drags (it's the drag that gets damped, via
+    // `spinResistance()`), so it "resumes" after release simply because it never stopped.
+    this.spinDriver.step(dt, this.autoSpinEnabled, this.spinDelta);
+    if (this.autoSpinEnabled) this.spin.quaternion.premultiply(this.spinDelta);
 
     this.camera.position.sub(this.appliedShake);
     this.cameraRig.update(dt);
@@ -247,13 +322,38 @@ export class SpaceScene {
     this.gameplayLight.position.copy(keyDir.multiplyScalar(50));
     this.gameplayLight.target.position.set(0, 0, 0);
 
-    this.sunLight.intensity = THREE.MathUtils.lerp(3.4, 1.8, blend);
-    this.fillLight.intensity = THREE.MathUtils.lerp(0.18, 0.5, blend);
-    this.gameplayLight.intensity = THREE.MathUtils.lerp(0, 2.5, blend);
+    this.sunLight.intensity = THREE.MathUtils.lerp(3.4, 1.0, blend);
+    this.fillLight.intensity = THREE.MathUtils.lerp(0.24, 0.5, blend);
+    this.gameplayLight.intensity = THREE.MathUtils.lerp(0, 1.9, blend);
 
-    if (this.sunMesh) this.sunMesh.visible = blend < 0.5;
-    if (this.sunFlare) this.sunFlare.visible = blend < 0.5;
-    if (this.sunGlow) (this.sunGlow.material as THREE.SpriteMaterial).opacity = THREE.MathUtils.lerp(0.9, 0.08, blend);
+    const sunHiddenByBlend = blend >= 0.5;
+    const sunOverlap = this.sunOverlapsGlobe();
+    const sunHidden = sunHiddenByBlend || sunOverlap;
+    if (this.sunMesh) this.sunMesh.visible = !sunHidden;
+    if (this.sunFlare) this.sunFlare.visible = !sunHidden;
+    if (this.sunGlow) {
+      const baseOpacity = THREE.MathUtils.lerp(0.9, 0.08, blend);
+      (this.sunGlow.material as THREE.SpriteMaterial).opacity = sunOverlap ? Math.min(baseOpacity, 0.08) : baseOpacity;
+    }
+  }
+
+  /**
+   * True whenever the Sun's screen-space position falls within (or close to)
+   * the bead globe/planet body's angular radius as seen from the camera —
+   * i.e. the Sun disc would visually overlap or sit behind the globe. Used
+   * to fade the Sun disc/glow/flare out so it never occludes the globe that
+   * is the subject of the current shot (gameplay, approach, hero, ...).
+   */
+  private sunOverlapsGlobe(): boolean {
+    const camPos = this.camera.position;
+    const toSun = SUN_DIRECTION.clone().multiplyScalar(SUN_DISTANCE).sub(camPos).normalize();
+    const toGlobe = new THREE.Vector3(0, 0, 0).sub(camPos);
+    const dist = toGlobe.length();
+    toGlobe.normalize();
+    const bodyRadius = 0.97 * 1.05; // bead shell radius margin
+    const angularRadius = Math.asin(THREE.MathUtils.clamp(bodyRadius / Math.max(dist, bodyRadius + 0.001), 0, 1));
+    const angle = Math.acos(THREE.MathUtils.clamp(toSun.dot(toGlobe), -1, 1));
+    return angle < angularRadius + THREE.MathUtils.degToRad(4);
   }
 
   render(): void {

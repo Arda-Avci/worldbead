@@ -6,6 +6,7 @@ import '@fontsource/exo-2/800.css';
 import './ui.css';
 import { icon } from './icons';
 import { haptic, setHapticsEnabled } from './haptic';
+import { POWER_NAMES, S } from './strings';
 import type {
   GameUIOptions,
   LevelCompleteData,
@@ -33,6 +34,7 @@ export class GameUI {
   private readonly planetName: HTMLElement;
   private readonly levelNum: HTMLElement;
   private readonly ring: HTMLElement;
+  private readonly nextPlanetLine: HTMLElement;
   private readonly gearBtn: HTMLElement;
 
   private readonly currentOrb: HTMLElement;
@@ -67,11 +69,12 @@ export class GameUI {
       <div class="wb-hud-layer" data-hud>
         <header class="wb-topbar">
           <div class="wb-stardust-pill wb-glass">${icon('stardust')}<span class="wb-num-fast" data-stardust>0</span></div>
-          <button class="wb-planet-badge wb-glass" type="button" data-planet-badge aria-label="Planet progress">
+          <button class="wb-planet-badge wb-glass" type="button" data-planet-badge aria-label="${S.planetProgressAria}">
             <span class="wb-planet-name" data-planet-name>Earth</span>
-            <span class="wb-level-line"><span class="wb-ring" data-ring style="--pct:0"></span><span data-level-num>Level 1</span></span>
+            <span class="wb-level-line"><span class="wb-ring" data-ring style="--pct:0"></span><span data-level-num>${S.level(1)}</span></span>
+            <span class="wb-next-planet-line wb-hidden" data-next-planet></span>
           </button>
-          <button class="wb-gear-btn wb-glass" type="button" data-gear aria-label="Settings">${icon('gear')}</button>
+          <button class="wb-gear-btn wb-glass" type="button" data-gear aria-label="${S.settingsAria}">${icon('gear')}</button>
         </header>
 
         <div class="wb-toast-wrap" data-toast-wrap>
@@ -81,8 +84,8 @@ export class GameUI {
 
         <div class="wb-dock" data-dock>
           <div class="wb-orb wb-orb-next" data-next-orb aria-hidden="true"></div>
-          <div class="wb-orb wb-orb-current" data-current-orb role="img" aria-label="Current probe"><span class="wb-num-fast" data-current-count></span></div>
-          <button class="wb-swap-btn wb-glass" type="button" data-swap aria-label="Swap probe">${icon('swap')}</button>
+          <div class="wb-orb wb-orb-current" data-current-orb role="img" aria-label="${S.currentProbeAria}"><span class="wb-num-fast" data-current-count></span></div>
+          <button class="wb-swap-btn wb-glass" type="button" data-swap aria-label="${S.swapProbeAria}">${icon('swap')}</button>
         </div>
 
         <div class="wb-powerbar wb-glass" data-powerbar></div>
@@ -90,7 +93,7 @@ export class GameUI {
 
       <div class="wb-loading" data-loading>
         <div class="wb-loading-planet"></div>
-        <div class="wb-loading-text wb-loading-dots" data-loading-text>Loading Earth</div>
+        <div class="wb-loading-text wb-loading-dots" data-loading-text>${S.loading('Earth')}</div>
       </div>
 
       <div class="wb-scrim" data-scrim></div>
@@ -101,11 +104,11 @@ export class GameUI {
 
       <div class="wb-logo-layer wb-hidden" data-logo-layer>
         <div class="wb-logo-word">WORLDBEAD</div>
-        <div class="wb-logo-sub">Pop the Planets</div>
-        <div class="wb-logo-tap">Tap to begin</div>
+        <div class="wb-logo-sub">${S.logoSub}</div>
+        <div class="wb-logo-tap">${S.tapToBegin}</div>
       </div>
 
-      <button class="wb-skip-btn wb-glass wb-hidden" type="button" data-skip>Skip</button>
+      <button class="wb-skip-btn wb-glass wb-hidden" type="button" data-skip>${S.skip}</button>
     `;
 
     const q = <T extends HTMLElement>(sel: string) => root.querySelector(sel) as T;
@@ -114,6 +117,7 @@ export class GameUI {
     this.planetName = q('[data-planet-name]');
     this.levelNum = q('[data-level-num]');
     this.ring = q('[data-ring]');
+    this.nextPlanetLine = q('[data-next-planet]');
     this.gearBtn = q('[data-gear]');
     this.currentOrb = q('[data-current-orb]');
     this.currentCount = q('[data-current-count]');
@@ -169,11 +173,17 @@ export class GameUI {
     countUp(this.stardustVal, from, value);
   }
 
-  setPlanetBadge(planetName: string, level: number, clearedPercent: number): void {
+  setPlanetBadge(planetName: string, level: number, clearedPercent: number, nextPlanetIn?: { name: string; levels: number } | null): void {
     this.planetName.textContent = planetName;
-    this.levelNum.textContent = `Level ${level}`;
+    this.levelNum.textContent = S.level(level);
     const pct = Math.round(Math.max(0, Math.min(1, clearedPercent)) * 100);
     this.ring.style.setProperty('--pct', String(pct));
+    if (nextPlanetIn && nextPlanetIn.levels > 0) {
+      this.nextPlanetLine.textContent = S.nextPlanetIn(nextPlanetIn.name, nextPlanetIn.levels);
+      this.nextPlanetLine.classList.remove('wb-hidden');
+    } else {
+      this.nextPlanetLine.classList.add('wb-hidden');
+    }
   }
 
   // ------------------------------------------------------------ probe dock
@@ -210,7 +220,7 @@ export class GameUI {
       const badge = btn.querySelector('[data-badge]') as HTMLElement;
       const charge = btn.querySelector('[data-charge]') as HTMLElement;
       if (s.locked) {
-        badge.textContent = `Lv ${s.unlockLevel ?? '?'}`;
+        badge.textContent = s.unlockLevel != null ? S.lockedLevel(s.unlockLevel) : '?';
         badge.classList.remove('wb-hidden');
         charge.classList.add('wb-hidden');
         btn.disabled = true;
@@ -238,7 +248,7 @@ export class GameUI {
   }
 
   showCombo(count: number): void {
-    this.comboEl.textContent = `MEGA POP ×${count}`;
+    this.comboEl.textContent = S.megaPop(count);
     this.comboEl.classList.remove('wb-show');
     // Force reflow so the animation restarts on repeated combos.
     void this.comboEl.offsetWidth;
@@ -249,7 +259,7 @@ export class GameUI {
   // -------------------------------------------------------------- loading
 
   showLoading(planetName: string): void {
-    this.loadingText.textContent = `Loading ${planetName}`;
+    this.loadingText.textContent = S.loading(planetName);
     this.loadingEl.classList.remove('wb-fade-out');
     this.loadingEl.style.display = 'grid';
   }
@@ -271,15 +281,15 @@ export class GameUI {
       const card = document.createElement('div');
       card.className = 'wb-card wb-glass';
       card.innerHTML = `
-        <div class="wb-card-title">${data.nextPlanetName ? 'Planet Complete' : 'Level Complete'}</div>
+        <div class="wb-card-title">${data.nextPlanetName ? S.planetComplete : S.levelComplete}</div>
         <div class="wb-stars" data-stars>${starsHtml}</div>
         <div class="wb-stardust-earn">${icon('stardust')}<span class="wb-num-fast" data-earn>0</span></div>
         <div class="wb-fact">
-          <div class="wb-fact-title">${escapeHtml(data.factTitle || 'Real fact')}</div>
+          <div class="wb-fact-title">${escapeHtml(data.factTitle || S.didYouKnow)}</div>
           <div class="wb-fact-text">${escapeHtml(data.factText)}</div>
         </div>
-        ${data.nextPlanetName ? `<div class="wb-next-stop">Next stop: <b>${escapeHtml(data.nextPlanetName)}</b></div>` : ''}
-        <button class="wb-btn-primary" type="button" data-primary>${escapeHtml(data.primaryLabel ?? (data.nextPlanetName ? 'Continue' : 'Next Level'))}</button>
+        ${data.nextPlanetName ? `<div class="wb-next-stop">${escapeHtml(S.nextStop(''))}<b>${escapeHtml(data.nextPlanetName)}</b></div>` : ''}
+        <button class="wb-btn-primary" type="button" data-primary>${escapeHtml(data.primaryLabel ?? (data.nextPlanetName ? S.continueLabel : S.nextLevel))}</button>
       `;
       const stars = card.querySelectorAll('[data-stars] span');
       stars.forEach((s, i) => {
@@ -296,17 +306,19 @@ export class GameUI {
     });
   }
 
-  showLevelFailed(data: LevelFailedData): Promise<void> {
-    return this.showCard((resolve) => {
+  showLevelFailed(data: LevelFailedData): Promise<'retry' | 'continue'> {
+    return this.showCard<'retry' | 'continue'>((resolve) => {
       const card = document.createElement('div');
       card.className = 'wb-card wb-glass';
       card.innerHTML = `
-        <div class="wb-card-title" style="background:none;-webkit-text-fill-color:var(--wb-danger);color:var(--wb-danger)">Out of Probes</div>
-        <div class="wb-beads-left">Beads left <b>${escapeHtml(String(data.beadsLeft))}</b></div>
-        <button class="wb-btn-primary" type="button" data-primary>Retry</button>
+        <div class="wb-card-title" style="background:none;-webkit-text-fill-color:var(--wb-danger);color:var(--wb-danger)">${S.outOfProbes}</div>
+        <div class="wb-beads-left">${S.beadsLeft} <b>${escapeHtml(String(data.beadsLeft))}</b></div>
+        <button class="wb-btn-primary wb-btn-retry" type="button" data-retry>${escapeHtml(S.retry)} <span>${data.retryCost}</span> ${icon('stardust')}</button>
+        <button class="wb-btn-secondary wb-btn-retry" type="button" data-continue${data.canAffordContinue ? '' : ' disabled'}>${escapeHtml(S.continueLabel)} <span>${data.continueCost}</span> ${icon('stardust')}</button>
       `;
-      const primary = card.querySelector('[data-primary]') as HTMLButtonElement;
-      primary.addEventListener('click', () => resolve());
+      (card.querySelector('[data-retry]') as HTMLButtonElement).addEventListener('click', () => resolve('retry'));
+      const continueBtn = card.querySelector('[data-continue]') as HTMLButtonElement;
+      if (data.canAffordContinue) continueBtn.addEventListener('click', () => resolve('continue'));
       haptic('medium');
       return card;
     });
@@ -329,12 +341,12 @@ export class GameUI {
     });
   }
 
-  private showCard(build: (resolve: () => void) => HTMLElement): Promise<void> {
+  private showCard<T = void>(build: (resolve: (value: T) => void) => HTMLElement): Promise<T> {
     return new Promise((resolve) => {
       this.scrimEl.innerHTML = '';
-      const card = build(() => {
+      const card = build((value: T) => {
         this.closeScrim();
-        resolve();
+        resolve(value);
       });
       this.scrimEl.appendChild(card);
       requestAnimationFrame(() => this.scrimEl.classList.add('wb-show'));
@@ -367,15 +379,15 @@ export class GameUI {
         <button class="wb-switch" type="button" data-key="${key}" data-on="${this.settings[key]}" aria-label="${label}"></button>
       </div>`;
     card.innerHTML = `
-      <button class="wb-close-btn" type="button" data-close aria-label="Close settings">${icon('close')}</button>
-      <div class="wb-card-title">Settings</div>
+      <button class="wb-close-btn" type="button" data-close aria-label="${S.closeSettingsAria}">${icon('close')}</button>
+      <div class="wb-card-title">${S.settingsTitle}</div>
       <div style="width:100%">
-        ${row('sound', 'Sound', 'sound', 'soundOff')}
-        ${row('music', 'Music', 'music', 'musicOff')}
-        ${row('haptics', 'Haptics', 'haptics', 'hapticsOff')}
+        ${row('sound', S.sound, 'sound', 'soundOff')}
+        ${row('music', S.music, 'music', 'musicOff')}
+        ${row('haptics', S.haptics, 'haptics', 'hapticsOff')}
       </div>
-      <button class="wb-btn-secondary" type="button" data-replay>Replay intro</button>
-      <div class="wb-credits">Planet textures &copy; Solar System Scope (solarsystemscope.com), CC BY 4.0, based on NASA imagery.</div>
+      <button class="wb-btn-secondary" type="button" data-replay>${S.replayIntro}</button>
+      <div class="wb-credits">${escapeHtml(S.credits)}</div>
     `;
     card.querySelectorAll<HTMLButtonElement>('[data-key]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -451,7 +463,7 @@ export class GameUI {
       onSkip();
     };
     this.skipBtn.addEventListener('click', this.skipHandler);
-    this.skipBtn.textContent = 'Skip';
+    this.skipBtn.textContent = S.skip;
   }
 
   hideSkip(): void {
@@ -464,16 +476,7 @@ export class GameUI {
 }
 
 function powerLabel(id: PowerId): string {
-  switch (id) {
-    case 'meteor':
-      return 'Meteor';
-    case 'prism':
-      return 'Prism';
-    case 'solarFlare':
-      return 'Solar Flare';
-    case 'comet':
-      return 'Comet';
-  }
+  return POWER_NAMES[id];
 }
 
 function escapeHtml(s: string): string {

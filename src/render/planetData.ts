@@ -13,6 +13,8 @@ export interface PlanetDef {
   atmosphereIntensity: number;
   /** Venus-style thick procedural cream cloud envelope. */
   thickClouds?: boolean;
+  /** True for a planet with no bundled real texture: `map` is ignored and the body is painted in-canvas instead (item #15's 5th cycle body). */
+  proceduralBands?: boolean;
 }
 
 export const PLANET_DATA: Record<PlanetId, PlanetDef> = {
@@ -38,6 +40,12 @@ export const PLANET_DATA: Record<PlanetId, PlanetDef> = {
     map: 'textures/mars.jpg',
     atmosphereColor: 0xe08a5a,
     atmosphereIntensity: 0.45,
+  },
+  jupiter: {
+    map: '', // unused — proceduralBands paints the body in-canvas instead (no bundled texture)
+    atmosphereColor: 0xd9b98a,
+    atmosphereIntensity: 0.6,
+    proceduralBands: true,
   },
 };
 
