@@ -16,6 +16,14 @@ import { FIRE_COLOR } from './invasion';
 export type TextureName = 'earth_daymap' | 'earth_clouds' | 'moon' | 'venus_surface' | 'mars' | 'jupiter';
 export type TextureMap = Partial<Record<TextureName, ImageDataLike>>;
 
+/** Bead-radius-from-spacing factor for every non-cloud shell (surface/layer). Also used by `computeFootprint` (see there). */
+const BEAD_RADIUS_FACTOR = 0.56;
+/** Same, for the `clouds` shell — clouds overlap more so a patch reads as a solid layer, not dots. */
+const BEAD_RADIUS_FACTOR_CLOUD = 0.72;
+function beadRadiusFactor(kind: Shell['kind']): number {
+  return kind === 'clouds' ? BEAD_RADIUS_FACTOR_CLOUD : BEAD_RADIUS_FACTOR;
+}
+
 interface Shell {
   kind: 'surface' | 'clouds' | 'layer';
   count: number;
@@ -168,7 +176,7 @@ function labToRgb(L: number, a: number, b: number): [number, number, number] {
 
 /**
  * Post-processes raw k-means centroid colors into a readable display palette:
- * hue is kept (the a/b direction in Lab), but lightness is pulled into a band
+ * hue is kept (the a/b direction in Lab), lightness is pulled into a band
  * that stays visible under camera-relative gameplay lighting (not crushed to
  * near-black or blown to near-white), weak chroma is nudged up so muted
  * centroids read as a recognizable color rather than grey, and any pair of
@@ -192,59 +200,74 @@ interface ReadablePaletteResult {
 function readablePalette(paletteHex: number[]): ReadablePaletteResult {
   // Kept close to the raw k-means centroid: readability must come from
   // lighting/gloss, not from exaggerating colors away from the real
-  // texture's tones (owner correction — bead colors must match the actual
-  // ground/ocean colors underneath). Only weak/near-duplicate centroids are
-  // nudged, never a global saturation boost.
+  // texture's tones — the owner's standing rule is that a bead's color must
+  // match the ground/ocean color underneath it. A round-3/round-4 attempt at
+  // "clearly distinct on every planet" rotated hue up to 55° and pushed a
+  // ΔE≥30 floor to get there, which routinely moved a color so far from its
+  // own k-means centroid that it stopped matching the real texture — the
+  // owner's actual, later bug report ("bead colors don't match the ground").
+  // The rule now is explicit: a color may drift **at most `MAX_SHIFT_FROM_ORIGINAL`
+  // ΔE from its own raw centroid**, never rotated in hue at all; if two
+  // classes are still too close after that limited push, they are MERGED
+  // (fewer, but still each still faithful to a real centroid) rather than
+  // shoved further apart. `MIN_DELTA_E` is the floor for whatever classes
+  // remain after merging, not a target every original centroid must reach on
+  // its own.
   const MIN_L = 28;
   const MAX_L = 90;
   const MIN_CHROMA = 16;
-  // Owner requirement #20 (round 1) + round 3's follow-up: every color class
-  // must read as *strongly*, clearly distinct on a phone screen, on every
-  // planet, not just Earth. ~20 CIE76 ΔE is a commonly-cited "clearly
-  // different color" threshold, but round 3's owner screenshots (Mars) showed
-  // that a palette sitting right at ΔE≈20 can still read as "shades of one
-  // brown" when every centroid shares the same hue — a real, low-hue-variance
-  // photo texture (Mars's rust/ochre surface) produces exactly that: several
-  // centroids that only differ in how light/dark the same brown is. Raised to
-  // 30 so the separation pass has to actually work harder before it's
-  // satisfied, and paired with the hue-rotation step below so that extra work
-  // spends some of its budget on hue, not lightness alone. Pairs that still
-  // can't reach it are merged rather than left confusable, trading one fewer
-  // color for guaranteed distinguishability.
-  const MIN_DELTA_E = 30;
-  // A too-close pair also gets pushed apart in hue (rotating each one's a/b
-  // vector around the Lab hue circle, in opposite directions), on top of the
-  // lightness push — never enough to leave the planet's hue family (Mars
-  // stays warm reds/oranges/browns, Venus stays warm creams, Jupiter stays
-  // its band tones), just enough that "clearly distinct classes" no longer
-  // depends on lightness doing all the work alone. True near-greys (Moon
-  // regolith/mare, chroma near 0) are effectively untouched by a hue
-  // rotation — rotating a near-zero vector is still near-zero — so they stay
-  // grey and separate only by lightness, exactly as intended.
-  const HUE_ROTATE_STEP_DEG = 6;
-  const MAX_HUE_ROTATE_DEG = 55;
+  const MIN_DELTA_E = 20;
+  const MAX_SHIFT_FROM_ORIGINAL = 10;
 
-  const labs: [number, number, number][] = paletteHex.map((hex) => {
+  const originalLabs: [number, number, number][] = paletteHex.map((hex) => {
     const r = ((hex >> 16) & 255) / 255, g = ((hex >> 8) & 255) / 255, b = (hex & 255) / 255;
     return rgbToLab(r, g, b);
   });
+  const labs: [number, number, number][] = originalLabs.map((lab) => [...lab] as [number, number, number]);
 
-  for (const lab of labs) {
-    let [L, a, b] = lab;
-    if (L < MIN_L) L = MIN_L + (L / MIN_L) * 8;
-    if (L > MAX_L) L = MAX_L;
+  const distFromOriginal = (i: number): number => {
+    const [oL, oa, ob] = originalLabs[i];
+    const [L, a, b] = labs[i];
+    return Math.sqrt((L - oL) ** 2 + (a - oa) ** 2 + (b - ob) ** 2);
+  };
+  // Clamps `labs[i]` back onto the sphere of radius `MAX_SHIFT_FROM_ORIGINAL` around its
+  // own original centroid whenever a push has moved it further than that.
+  const clampToBudget = (i: number): void => {
+    const d = distFromOriginal(i);
+    if (d <= MAX_SHIFT_FROM_ORIGINAL) return;
+    const t = MAX_SHIFT_FROM_ORIGINAL / d;
+    const [oL, oa, ob] = originalLabs[i];
+    labs[i][0] = oL + (labs[i][0] - oL) * t;
+    labs[i][1] = oa + (labs[i][1] - oa) * t;
+    labs[i][2] = ob + (labs[i][2] - ob) * t;
+  };
+  // Nudges `labs[i]`'s lightness by `delta` (toward legibility or away from a too-close
+  // neighbor), but never past the per-color drift budget from its own original centroid.
+  const shiftLightness = (i: number, delta: number): void => {
+    labs[i][0] = Math.max(16, Math.min(92, labs[i][0] + delta));
+    clampToBudget(i);
+  };
+
+  for (let i = 0; i < labs.length; i++) {
+    const [L, a, b] = labs[i];
+    let newL = L;
+    if (newL < MIN_L) newL = MIN_L + (newL / MIN_L) * 8;
+    if (newL > MAX_L) newL = MAX_L;
+    labs[i][0] = newL;
     const chroma = Math.hypot(a, b);
     if (chroma > 2 && chroma < MIN_CHROMA) {
       const s = MIN_CHROMA / chroma;
-      a *= s;
-      b *= s;
+      labs[i][1] = a * s;
+      labs[i][2] = b * s;
     }
-    lab[0] = L;
-    lab[1] = a;
-    lab[2] = b;
+    clampToBudget(i);
   }
 
-  const hueRotated = new Array(labs.length).fill(0);
+  // Separation pass: push too-close pairs apart in lightness only (no hue rotation — hue is
+  // exactly what must stay put to keep matching the ground), each push capped by how much of
+  // its ΔE-from-original budget that color has left. A pair that's already at (or near) its
+  // budget on both sides just can't be pushed any further, and falls through to the merge
+  // step below instead.
   for (let iter = 0; iter < 48; iter++) {
     let changed = false;
     for (let i = 0; i < labs.length; i++) {
@@ -252,42 +275,28 @@ function readablePalette(paletteHex: number[]): ReadablePaletteResult {
         const dL = labs[i][0] - labs[j][0], da = labs[i][1] - labs[j][1], db = labs[i][2] - labs[j][2];
         const dE = Math.sqrt(dL * dL + da * da + db * db);
         if (dE < MIN_DELTA_E) {
+          const before = [labs[i][0], labs[j][0]];
           const need = (MIN_DELTA_E - dE) / 2 + 0.5;
           if (labs[i][0] >= labs[j][0]) {
-            labs[i][0] = Math.min(92, labs[i][0] + need);
-            labs[j][0] = Math.max(16, labs[j][0] - need);
+            shiftLightness(i, need);
+            shiftLightness(j, -need);
           } else {
-            labs[j][0] = Math.min(92, labs[j][0] + need);
-            labs[i][0] = Math.max(16, labs[i][0] - need);
+            shiftLightness(j, need);
+            shiftLightness(i, -need);
           }
-          if (hueRotated[i] < MAX_HUE_ROTATE_DEG) {
-            const step = Math.min(HUE_ROTATE_STEP_DEG, MAX_HUE_ROTATE_DEG - hueRotated[i]);
-            const rad = (step * Math.PI) / 180;
-            const [a, bch] = [labs[i][1], labs[i][2]];
-            labs[i][1] = a * Math.cos(rad) - bch * Math.sin(rad);
-            labs[i][2] = a * Math.sin(rad) + bch * Math.cos(rad);
-            hueRotated[i] += step;
-          }
-          if (hueRotated[j] < MAX_HUE_ROTATE_DEG) {
-            const step = Math.min(HUE_ROTATE_STEP_DEG, MAX_HUE_ROTATE_DEG - hueRotated[j]);
-            const rad = (-step * Math.PI) / 180;
-            const [a, bch] = [labs[j][1], labs[j][2]];
-            labs[j][1] = a * Math.cos(rad) - bch * Math.sin(rad);
-            labs[j][2] = a * Math.sin(rad) + bch * Math.cos(rad);
-            hueRotated[j] += step;
-          }
-          changed = true;
+          if (labs[i][0] !== before[0] || labs[j][0] !== before[1]) changed = true;
         }
       }
     }
     if (!changed) break;
   }
 
-  // Final safety net: merge any pair still under MIN_DELTA_E despite the lightness push
-  // (union-find so a chain of near-duplicates collapses to one representative). Merging
-  // and measuring must be two separate passes: recording a pair's distance as `minDeltaE`
-  // in the same step that decides to merge it would report a distance that no longer
-  // exists once that pair collapses into a single final color.
+  // Final safety net: merge any pair still under MIN_DELTA_E — either because the lightness
+  // push above couldn't move it far enough within its drift budget, or because it was never
+  // touched (union-find so a chain of near-duplicates collapses to one representative).
+  // Merging and measuring must be two separate passes: recording a pair's distance as
+  // `minDeltaE` in the same step that decides to merge it would report a distance that no
+  // longer exists once that pair collapses into a single final color.
   const parent = labs.map((_, i) => i);
   const find = (x: number): number => {
     while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
@@ -570,8 +579,8 @@ function buildVenusCloudPaint(dirs: Float32Array, seed: number): Int16Array {
  * the outermost layer, each outer layer over the next one in, down to the
  * real surface).
  */
-function buildCoveredBy(coveringDirs: Float32Array, coveringSpacing: number, bodyDirs: Float32Array, bodySpacing: number): Int32Array[] {
-  const forward = computeFootprint(coveringDirs, coveringSpacing, bodyDirs, bodySpacing); // forward[coveringIdx] -> body indices it covers
+function buildCoveredBy(coveringDirs: Float32Array, coveringSpacing: number, coveringFactor: number, bodyDirs: Float32Array, bodySpacing: number, bodyFactor: number): Int32Array[] {
+  const forward = computeFootprint(coveringDirs, coveringSpacing, coveringFactor, bodyDirs, bodySpacing, bodyFactor); // forward[coveringIdx] -> body indices it covers
   const bodyCount = bodyDirs.length / 3;
   const buckets: number[][] = new Array(bodyCount);
   for (let i = 0; i < bodyCount; i++) buckets[i] = [];
@@ -594,10 +603,23 @@ function rotateDirsY(dirs: Float32Array, angle: number): Float32Array {
   return out;
 }
 
-/** Bucket-based angular coverage: for each `a` bead, which `b` beads lie within its footprint. */
-function computeFootprint(aDirs: Float32Array, aSpacing: number, bDirs: Float32Array, bSpacing: number): Int32Array[] {
+/**
+ * Bucket-based angular coverage: for each `a` bead, which `b` beads lie within its footprint.
+ * The threshold is the actual rendered angular half-size of each side's own bead (spacing ×
+ * that shell's bead-radius factor — 0.56 normally, 0.72 for clouds, matching `makeShell`'s
+ * real geometry) summed together plus a small margin, rather than a flat, factor-blind
+ * `max(spacing) * 0.75` guess. The old guess didn't know about the 0.72 cloud factor and only
+ * used the larger of the two spacings (not the sum of both halves), so it under-covered
+ * exactly where a bead is geometrically still hidden behind a bigger/still-alive covering
+ * bead: the game logic called it "exposed" (paintable, hittable, rendered at full opacity)
+ * while the covering bead's own sphere still visually overlapped it on screen — read by the
+ * owner as "some beads are two-colored" (a still-alive covering bead's color bleeding/z-
+ * fighting into a bead the game had already started treating as clear).
+ */
+function computeFootprint(aDirs: Float32Array, aSpacing: number, aFactor: number, bDirs: Float32Array, bSpacing: number, bFactor: number): Int32Array[] {
   const bCount = bDirs.length / 3;
-  const cosLimit = Math.cos(Math.max(aSpacing, bSpacing) * 0.75);
+  const MARGIN = 1.15;
+  const cosLimit = Math.cos((aSpacing * aFactor + bSpacing * bFactor) * MARGIN);
   const cell = 0.25;
   const bk = (x: number, y: number, z: number) => `${Math.floor(x / cell)},${Math.floor(y / cell)},${Math.floor(z / cell)}`;
   const buckets = new Map<string, number[]>();
@@ -687,7 +709,7 @@ export class BeadGlobe implements GlobeAdapter {
       const shell = this.makeShell('layer', dirs, start, list, colorIdx, palette, radius, layerCfg.beadCount, seed);
       if (prevDirs) {
         shell.coveringShellIndex = prevShellIndex!;
-        shell.coveredBy = buildCoveredBy(prevDirs, prevSpacing, dirs, spacing);
+        shell.coveredBy = buildCoveredBy(prevDirs, prevSpacing, BEAD_RADIUS_FACTOR, dirs, spacing, BEAD_RADIUS_FACTOR);
       }
       this.shells.push(shell);
       prevDirs = dirs;
@@ -708,7 +730,7 @@ export class BeadGlobe implements GlobeAdapter {
     const surface = this.makeShell('surface', surfaceDirs, sStart, sList, sColorIdx, sPalette, 1.0, cfg.beadCount, cfg.seed);
     if (prevDirs) {
       surface.coveringShellIndex = prevShellIndex!;
-      surface.coveredBy = buildCoveredBy(prevDirs, prevSpacing, surfaceDirs, surfaceSpacing);
+      surface.coveredBy = buildCoveredBy(prevDirs, prevSpacing, BEAD_RADIUS_FACTOR, surfaceDirs, surfaceSpacing, BEAD_RADIUS_FACTOR);
     }
     this.shells.push(surface);
     const outermostBodyIndex = numExtra > 0 ? 0 : this.shells.length - 1;
@@ -785,7 +807,7 @@ export class BeadGlobe implements GlobeAdapter {
 
       const outermostBody = this.shells[outermostBodyIndex];
       outermostBody.coveringShellIndex = cloudShellIndex;
-      outermostBody.coveredBy = buildCoveredBy(cloudDirs, cloudSpacing, outermostBodyDirs, outermostBodySpacing);
+      outermostBody.coveredBy = buildCoveredBy(cloudDirs, cloudSpacing, BEAD_RADIUS_FACTOR_CLOUD, outermostBodyDirs, outermostBodySpacing, BEAD_RADIUS_FACTOR);
       this.cloudCoverRecalc = { cloudDirs, cloudSpacing, bodyShellIndex: outermostBodyIndex, bodyDirs: outermostBodyDirs, bodySpacing: outermostBodySpacing };
     }
 
@@ -796,7 +818,7 @@ export class BeadGlobe implements GlobeAdapter {
     const count = dirs.length / 3;
     const spacing = Math.sqrt((4 * Math.PI) / designCount);
     // Clouds overlap more than surface/layer beads so a coherent patch reads as a solid layer, not dots.
-    const beadRadius = spacing * radius * (kind === 'clouds' ? 0.72 : 0.56);
+    const beadRadius = spacing * radius * beadRadiusFactor(kind);
     const mesh = new THREE.InstancedMesh(this.geometry, materialOverride ?? this.material, Math.max(1, count));
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     const shell: Shell = {
@@ -844,7 +866,86 @@ export class BeadGlobe implements GlobeAdapter {
     return n;
   }
 
+  /**
+   * Which concentric bead layer (1 = outermost) the player is currently working through, and how
+   * many there are in total (excluding `clouds`, which isn't counted as a "layer" — see GDD §13's
+   * `layerCount`). "Current" is the outermost body shell (surface/`layer`, outer-to-inner is this
+   * array's own construction order) that still has any alive bead — used for the HUD's own layer
+   * indicator (owner bug report: "the layered structure isn't there").
+   */
+  layerProgress(): { current: number; total: number } {
+    const bodyShells = this.shells.filter((s) => s.kind !== 'clouds');
+    const total = bodyShells.length;
+    for (let idx = 0; idx < bodyShells.length; idx++) {
+      const s = bodyShells[idx];
+      let alive = 0;
+      for (let i = 0; i < s.count; i++) alive += s.alive[i];
+      if (alive > 0) return { current: idx + 1, total };
+    }
+    return { current: total, total };
+  }
+
+  /** Read-only per-shell diagnostic (alive vs. exposed-alive counts), for QA only — see `Game.ts`'s dev-only `__wbQA` hook. */
+  debugShellBreakdown(): { kind: string; count: number; alive: number; exposedAlive: number }[] {
+    return this.shells.map((s) => {
+      let alive = 0, exposedAlive = 0;
+      for (let i = 0; i < s.count; i++) {
+        if (!s.alive[i]) continue;
+        alive++;
+        if (!this.isCovered(s, i)) exposedAlive++;
+      }
+      return { kind: s.kind, count: s.count, alive, exposedAlive };
+    });
+  }
+
+  /**
+   * Connected same-color, currently-exposed beads starting at (shellId,
+   * startIdx) — i.e. what a player can actually see and would expect to pop
+   * together. The BFS stops at any same-color bead that's still `isCovered`
+   * (hidden under an intact outer layer/cloud elsewhere on this shell): the
+   * neighbor graph only knows adjacency, not visibility, so without this
+   * check a same-color patch that happens to also reach under still-alive
+   * cover would pop invisibly — the player never sees it happen, and later,
+   * once the cover above it finally clears, that patch is already gone
+   * instead of being revealed (the reported "layers aren't really there" and
+   * beads vanishing without a visible pop). `startIdx` itself is always
+   * exposed already (every caller checks that before calling `region`).
+   */
   region(shellId: number, startIdx: number): BeadRef[] {
+    const shell = this.shells[shellId];
+    const color = shell.colorIdx[startIdx];
+    const seen = new Uint8Array(shell.count);
+    const out: BeadRef[] = [];
+    let frontier = [startIdx];
+    seen[startIdx] = 1;
+    while (frontier.length) {
+      const next: number[] = [];
+      for (const i of frontier) {
+        out.push({ shellId, index: i });
+        for (let p = shell.nbrStart[i]; p < shell.nbrStart[i + 1]; p++) {
+          const j = shell.nbrList[p];
+          if (!seen[j] && shell.alive[j] && shell.colorIdx[j] === color && !this.isCovered(shell, j)) {
+            seen[j] = 1;
+            next.push(j);
+          }
+        }
+      }
+      frontier = next;
+    }
+    return out;
+  }
+
+  /**
+   * Same as `region()` but coverage-*blind* — a same-color, same-shell connected patch counts as
+   * one region even where part of it is currently `isCovered`. Coverage is a live, temporary state
+   * (it clears the moment whatever's above it gets popped), so it must NOT fragment the *budgeting*
+   * count `countRegions()` uses: at level start almost every body-shell bead starts covered by an
+   * outer layer/cloud that is itself still 100% alive, so the coverage-aware `region()` (correct for
+   * an actual `fire()`, see there) would make nearly every alive bead its own singleton "region" —
+   * inflating the shot budget from tens to thousands and making a level nearly unfinishable. This is
+   * only ever used for that one-time budgeting count, never for what an actual pop touches.
+   */
+  private rawRegion(shellId: number, startIdx: number): BeadRef[] {
     const shell = this.shells[shellId];
     const color = shell.colorIdx[startIdx];
     const seen = new Uint8Array(shell.count);
@@ -876,7 +977,7 @@ export class BeadGlobe implements GlobeAdapter {
       for (let i = 0; i < s.count; i++) {
         if (!s.alive[i] || seen[i]) continue;
         total++;
-        for (const b of this.region(shellId, i)) seen[b.index] = 1;
+        for (const b of this.rawRegion(shellId, i)) seen[b.index] = 1;
       }
     }
     return total;
@@ -1128,8 +1229,17 @@ export class BeadGlobe implements GlobeAdapter {
    * even though the cloud patch reads as visually solid — without this, a
    * cloud bead could be un-hittable from most angles even though it's
    * clearly on screen (item #9).
+   *
+   * `fallbackPoint` (a world-space point on the globe's own outer bounding
+   * sphere, from an analytic ray/sphere test — see `Game.ts`'s `pickBead`)
+   * is used for the same snap when the raycast hit *no* bead instance at
+   * all, which is exactly the case at the globe's limb: a grazing ray can
+   * thread every instance's gaps at once (not just the cloud shell's), so
+   * `hits` comes back empty and there was previously no fallback whatsoever
+   * — this is why cloud beads near the limb stayed unhittable from some
+   * angles even after item #9 (owner bug report, round 2).
    */
-  resolveHit(hits: THREE.Intersection[]): { shellId: number; index: number; point: THREE.Vector3 } | null {
+  resolveHit(hits: THREE.Intersection[], fallbackPoint?: THREE.Vector3 | null): { shellId: number; index: number; point: THREE.Vector3 } | null {
     for (const h of hits) {
       if (h.instanceId === undefined) continue;
       const shellId = (h.object as THREE.InstancedMesh).userData.shellId as number;
@@ -1138,11 +1248,12 @@ export class BeadGlobe implements GlobeAdapter {
       if (!shell.alive[i] || this.isCovered(shell, i)) continue;
       return { shellId, index: i, point: h.point.clone() };
     }
-    if (hits.length === 0) return null;
+    const originPoint = hits.length > 0 ? hits[0].point : fallbackPoint;
+    if (!originPoint) return null;
     const cloudShellId = this.shells.findIndex((s) => s.kind === 'clouds');
     if (cloudShellId === -1) return null;
     const cloud = this.shells[cloudShellId];
-    const worldLocal = this.group.worldToLocal(hits[0].point.clone());
+    const worldLocal = this.group.worldToLocal(originPoint.clone());
     if (worldLocal.lengthSq() < 1e-8) return null;
     worldLocal.normalize();
     // The clouds mesh may be drifting (item #19) — undo its rotation so the query
@@ -1164,6 +1275,13 @@ export class BeadGlobe implements GlobeAdapter {
 
   beadRadius(shellId = 0): number {
     return this.shells[shellId]?.beadRadius ?? 0.02;
+  }
+
+  /** Radius of the outermost shell (clouds, if any, else the outermost layer/surface) — for a fallback ray/sphere test when a raycast hits no bead instance at all. */
+  outerRadius(): number {
+    let r = 1.0;
+    for (const s of this.shells) r = Math.max(r, s.radius);
+    return r;
   }
 
   // ---------------- level-start / win animations ----------------
@@ -1246,7 +1364,7 @@ export class BeadGlobe implements GlobeAdapter {
     const { cloudSpacing, bodyShellIndex, bodyDirs, bodySpacing } = this.cloudCoverRecalc;
     const rotatedCloudDirs = rotateDirsY(clouds.dirs, clouds.mesh.rotation.y);
     const body = this.shells[bodyShellIndex];
-    body.coveredBy = buildCoveredBy(rotatedCloudDirs, cloudSpacing, bodyDirs, bodySpacing);
+    body.coveredBy = buildCoveredBy(rotatedCloudDirs, cloudSpacing, BEAD_RADIUS_FACTOR_CLOUD, bodyDirs, bodySpacing, BEAD_RADIUS_FACTOR);
   }
 
   /** Transforms a group-local point/direction into `shell`'s own local space, undoing its drift rotation (item #19; identity for non-drifting shells). */

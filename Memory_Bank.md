@@ -1091,3 +1091,187 @@ committed): `level1_5s/20s.png` (the reference size), `level31/35/40_5s/20s.png`
 bigger/sparser beads in the prior round's screenshots), `level60_5s/20s.png`
 (an Earth cloud tuft, sized consistently with the surrounding surface/layer
 beads rather than as an oversized blob).
+
+## Five owner-reported bugs from real Android play (this session)
+
+Each of the five was reproduced first (Playwright + `npx vite`/`vite preview`,
+SwiftShader Chromium, `?level=N&skipIntro=1`, and — for the win-condition and
+input bugs — a small dev-only `window.__wbQA` extension added this session:
+`aliveBreakdown()`, `debugShellBreakdown()`, `layerProgress()`'s HUD wiring,
+`grazingCloudHitTest()`, `fireAtCurrentProbeDirect()` — all under
+`import.meta.env.DEV`, confirmed stripped from `dist/` by `grep -r __wbQA
+dist/` after `npm run build`) before touching any code, per the standing
+"reproduce before you fix" rule this file has needed more than once.
+
+1. **Level completes before all beads are gone / "the layered structure
+   isn't there" — same root cause.** `BeadGlobe.region()` (the BFS `fire()`
+   uses to find "the connected same-color patch this tap pops") walked the
+   shell's neighbor graph checking only `alive` and same `colorIdx` — never
+   `isCovered`. A same-color patch on a `layer`/`surface` shell very often
+   has *some* members still hidden under an intact outer layer/cloud
+   elsewhere on the same shell (coverage is per-bead, from footprint
+   overlap, not a clean partition), so firing at an *exposed* member of that
+   patch silently popped the *hidden* members too — marked dead
+   instantly, with no visible pop, no probe spent on them, and no chance
+   for the player to ever see that patch. Two visible symptoms from the one
+   bug: (a) a later layer, once its own cover finally clears, is already
+   missing chunks that vanished earlier — never looking like a distinct
+   layer being revealed; (b) `aliveCount()` (and therefore the win check)
+   could reach 0 having "processed" beads the player never interacted with,
+   which is the honest reading of the owner's "check the win condition
+   against every shell, including layers that are hidden/unexposed."
+   **Fix**: `region()` now also requires `!isCovered(shell, j)` on every
+   BFS step (`src/game/BeadGlobe.ts`); a hidden same-color member simply
+   isn't reachable until its own turn. `findLargestExposedRegionOfColor`/
+   `findLargestExposedCloudRegion` (already coverage-checked at the seed)
+   automatically get the same correctness for free. **This uncovered a
+   second, latent bug**: `countRegions()` (which sizes the whole level's
+   shot budget, `GameSession.probesTotal = ceil(regions * shotSlack)`) also
+   called `region()`, and at level start almost the entire covered
+   shell is, by definition, still covered by an outer layer/cloud that's
+   100% alive — so the coverage-aware BFS turned nearly every alive bead
+   into its own singleton "region," inflating a level's shot budget from
+   dozens to *thousands* (reproduced directly: level 151, 3 layers, fired
+   500 real taps with zero pops registering — traced via a QA-only
+   `fireAtCurrentProbeDirect()` bypassing DOM/raycasting entirely, which
+   still showed 0 change, and finally to `handleGlobeTap`'s
+   `if (this.session.probes <= 0) return;` early-out never firing because
+   probes never even started low — the level was simply configured with an
+   effectively-infinite/very-large budget that made no practical
+   difference here, but would on a level where regions is large enough to
+   overflow reasonable play). **Fix**: added a separate, deliberately
+   coverage-*blind* `rawRegion()` used only by `countRegions()` — coverage
+   is temporary and dynamic (it clears the instant whatever's above it
+   pops), so the *budgeting* count must keep treating a natural color patch
+   as one region regardless of momentary cover, while the *actual pop*
+   (`region()`, used by `fire()`) stays coverage-aware. Verified: level 55
+   (2 layers, clouds) played to a clean win with `aliveCount() === 0`
+   exactly when `session.isOver` (`scratchpad/win_repro.mjs`, 196 real taps,
+   drag-rotating whenever no target was hittable); level 151 (3 layers) was
+   separately confirmed NOT to hang after the `rawRegion` fix in the same
+   harness. **Honesty note**: while investigating level 151 I also found the
+   whole page renders at ~1.3 fps under SwiftShader at that bead count (vs.
+   ~4 fps for level 2) — enough that a probe's ~0.25s flight-then-fire
+   animation can take many real seconds to resolve in headless testing. I
+   could not fully rule out this being a genuine performance risk on a very
+   low-end Android device (many concurrent instanced-mesh draws at 3500+
+   beads), but it is very likely primarily the project's own
+   already-documented SwiftShader/headless testing artifact (see "Known
+   limitations" above), not the bug the owner reported — flagging it
+   honestly rather than either fixing or dismissing something I didn't
+   pin down.
+
+2. **Some beads are two-colored.** `computeFootprint()` (backs
+   `buildCoveredBy`, which decides whether a body-shell bead is "covered")
+   used a coverage-radius heuristic — `cos(max(aSpacing, bSpacing) * 0.75)`
+   — that ignored `makeShell`'s actual per-kind bead-radius factor (0.56
+   normally, 0.72 for clouds) and only used the larger of the two shells'
+   spacings, not the sum of both beads' real half-angular sizes. Computed
+   against the real geometry, this threshold was *smaller* than the real
+   combined footprint whenever the covering shell was clouds (0.72 factor,
+   never accounted for) or whenever the finer shell's own spacing
+   meaningfully added to the sum — i.e. it called a bead "exposed" (and so
+   painted/hit-testable/rendered at full opacity) while a still-alive
+   covering bead's own sphere still visually overlapped it on screen, which
+   reads as a bead z-fighting/blending between two colors. **Fix**:
+   `computeFootprint`/`buildCoveredBy` now take each side's actual
+   bead-radius factor and use `(aSpacing * aFactor + bSpacing * bFactor) *
+   1.15` (the real combined angular half-sizes, plus a small margin) as the
+   threshold — `src/game/BeadGlobe.ts`, all four call sites (`layer`→
+   `layer`, `layer`→`surface`, `clouds`→body, and the drift recompute)
+   updated. Verified by code (the new threshold is provably ≥ the old one
+   in every case that previously under-covered) and by screenshot at level
+   55 mid-play (`scratchpad/boundary_L55_mid.png`) showing a clean boundary
+   with no visible blending; I could not force a side-by-side
+   before/after frame of the exact artifact (it's a narrow, transient
+   overlap at natural bead-pattern boundaries), so treat the visual
+   confirmation as partial — the geometric argument is the stronger half of
+   this fix.
+
+3. **Clouds can't be hit from every angle.** `resolveHit()`'s existing
+   "snap to nearest alive cloud bead" fallback (item #9, an earlier fix)
+   only ran when the raycast hit *some* bead instance but not the intended
+   one; a genuinely grazing/limb tap that threads every instance's gaps at
+   once returns zero hits, and there was no fallback at all for that case.
+   **Fix**: `Game.ts`'s `pickBead` now computes an analytic ray/outer-sphere
+   intersection (same technique `screenToGlobeDir`'s comet-swipe fallback
+   already used) whenever the raycast hits no instance, and hands that
+   point to `resolveHit` as `fallbackPoint` so the existing cloud-snap logic
+   still runs — `BeadGlobe.outerRadius()` added for the sphere radius.
+   **Honesty note**: I built a QA-only `grazingCloudHitTest()` (every
+   currently-exposed cloud bead within 0–0.2 / 0–0.06 of grazing `facing`,
+   real `pickBead` resolution) and ran it across Earth (levels 8, 55, 60)
+   and Venus (35, its clouds are its whole visible surface) at many
+   rotations, both with and without this fix (temporarily disabled via a
+   `false &&` to compare) — every one of ~500 sampled grazing candidates
+   resolved via `pickBead` in *both* configurations (100% hit rate,
+   `rawMiss: 0` throughout), i.e. I could not get the raycaster to
+   actually return zero instance hits in headless SwiftShader testing at
+   any angle I tried. The fix is still real and strictly does no harm (it
+   only activates on a genuine zero-hit raycast, a case the old code
+   handled by returning `null` unconditionally), and it directly extends an
+   already-shipped, owner-motivated fix (item #9) to the one case it didn't
+   cover — but I'm not claiming to have reproduced the exact failure a real
+   phone's touch/GPU stack apparently still hits. If it recurs, the next
+   place to look is touch-point precision (a finger's contact centroid vs.
+   a mouse's exact pixel) or per-device raycasting precision, neither of
+   which SwiftShader + a synthetic mouse click can exercise.
+
+4. **The layered structure isn't there.** Root cause is shared with #1
+   above (see there for the silent-pop mechanism) plus a UI gap: the
+   existing `newLayer` tutorial card only shows once, the moment a layer is
+   introduced — nothing persists afterward to remind the player more than
+   one layer exists. **Fix**: `BeadGlobe.layerProgress()` (outermost body
+   shell — `layer`/`surface`, not `clouds` — with any alive bead, 1 =
+   outermost) backs a small always-visible `Katman X/Y` / `Layer X/Y` HUD
+   line (`GameUI.setLayerProgress`, `src/ui/gameui.ts`+`ui.css`, string in
+   `src/ui/strings.ts`) shown only when a level has more than one layer, plus
+   a one-time `S.layerCleared` toast the moment the current layer number
+   actually advances (`Game.ts`'s `updateHud`, `lastLayerShown` tracked per
+   level). Combined with #1's fix (a layer no longer loses chunks before
+   its own reveal) this should make layers both *visible* (the HUD says so
+   throughout) and *honest* (what's revealed is what was actually there).
+   Verified: `Katman 1/2` appears on level 55 (`scratchpad/boundary_L55_mid.png`)
+   and `Katman 1/2` alongside the existing `newLayer` card on level 45
+   (`scratchpad/palette2_L45.png`, Jupiter's first layer level). Did not
+   verify the `layerCleared` toast firing at an actual transition in this
+   session (would need a longer supervised playthrough than the batch
+   scripts here covered) — flagging as untested rather than claiming it.
+
+5. **Bead colors don't match the ground color.** Exactly the suspect named
+   in the ask: `readablePalette()` (rounds 3–4 above) rotated hue up to 55°
+   and pushed a ΔE≥30 floor to make every planet's palette "clearly
+   distinct," which routinely moved a color well away from its own k-means
+   centroid — i.e. away from the real texture underneath, breaking the
+   older, more fundamental "beads match the ground" rule. **Fix**: rewrote
+   `readablePalette()` (`src/game/BeadGlobe.ts`) to the owner's new rule
+   exactly — every legibility push (the `MIN_L`/`MAX_L` band, the weak-
+   chroma boost, and the pairwise separation step) is now clamped so a
+   color can move **at most ΔE 10** from its own original centroid
+   (`clampToBudget`, checked after every nudge); no hue rotation at all
+   anymore. `MIN_DELTA_E` lowered back to 20 (a floor for what survives,
+   not a target every original color must individually reach), and the
+   existing union-find safety net now does the real work when two classes
+   are still under 20 apart after their limited pushes: it **merges** them
+   (fewer classes, each still faithful to a real centroid) instead of the
+   old behavior of forcing them apart with hue. Probe/shot colors already
+   came from `shell.palette[shell.colorIdx[i]]` — the same array
+   `readablePalette` returns — so they match by construction; no separate
+   fix needed there. Venus's cloud-top palette (`VENUS_CLOUD_PALETTE`) is
+   untouched: it's a fixed, hand-picked procedural constant with no k-means
+   centroid to drift from (no bundled real Venus cloud texture), so the
+   ΔE-from-centroid rule doesn't apply to it — Venus's actual `surface`
+   shell underneath (revealed once its clouds clear) does go through the
+   rewritten `readablePalette()` like every other planet. Verified by
+   screenshot: Earth level 2 (`scratchpad/palette_L2.png`) — clearly
+   natural ocean-blue/land-olive/desert-tan, no visible hue drift; Venus
+   level 35 (`scratchpad/palette2_L35.png`) — three legible cream/tan/rust
+   tones, matching the real Venus reference look without the previous
+   blown-out white-ball problem. Mars (25, 80) and Jupiter (45) textures
+   took long enough to load under headless SwiftShader (12s+, likely the
+   planet-transition warp/texture-fetch cost, not a real-game issue — level
+   2 loaded fine at 6s) that I did not get a clean gameplay screenshot for
+   them this session; their correctness rests on the same code guarantee
+   (the ΔE-10 clamp applies identically to every planet's palette) rather
+   than an independent visual check — flagging honestly rather than
+   claiming a screenshot I don't have.

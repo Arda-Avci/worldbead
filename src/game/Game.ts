@@ -154,6 +154,8 @@ export class Game {
   private currentPlanetLoaded: PlanetId | null = null;
   private buildToken = 0;
   private levelTotalBeads = 0;
+  /** Which layer the HUD last reported, so a genuine advance (owner bug report: "the layered structure isn't there") gets a one-time toast instead of firing every `updateHud()`. 0 = not yet known this level. */
+  private lastLayerShown = 0;
 
   // alien invasion (see `src/game/invasion.ts`)
   private readonly aliens = new AlienInvasionRenderer();
@@ -225,6 +227,9 @@ export class Game {
     if (import.meta.env.DEV) {
       (window as unknown as { __wbQA: unknown }).__wbQA = {
         targetForCurrentProbe: () => this.qaTargetForCurrentProbe(),
+        aliveBreakdown: () => this.qaAliveBreakdown(),
+        grazingCloudHitTest: () => this.qaGrazingCloudHitTest(),
+        fireAtCurrentProbeDirect: () => this.qaFireAtCurrentProbeDirect(),
       };
     }
 
@@ -446,6 +451,7 @@ export class Game {
     // bare photoreal planet body first; the beads fly in and reveal themselves as a separate beat).
     globe.group.visible = false;
     this.levelTotalBeads = globe.aliveCount();
+    this.lastLayerShown = 0;
 
     this.applyUnlocks(cfg.level);
     const powers = this.buildPowerStates();
@@ -1057,6 +1063,17 @@ export class Game {
       ? { name: PLANET_NAMES[this.cfg.nextPlanet], levels: this.cfg.levelsUntilNextPlanet }
       : null;
     this.ui.setPlanetBadge(PLANET_NAMES[this.cfg.planet], this.cfg.level, clearedPct, nextIn);
+    if (this.globe && this.cfg.layerCount > 1) {
+      const { current, total } = this.globe.layerProgress();
+      this.ui.setLayerProgress(current, total);
+      // A real advance (not the first read of a fresh level) gets a one-time toast, so clearing an
+      // outer layer feels like a distinct event rather than a silent HUD-number tick (owner bug
+      // report: "the layered structure isn't there" — a visible transition cue when one clears).
+      if (this.lastLayerShown !== 0 && current > this.lastLayerShown) this.ui.showToast(S.layerCleared);
+      this.lastLayerShown = current;
+    } else {
+      this.ui.setLayerProgress(1, 1);
+    }
     const c0 = this.session.queue[0];
     const c1 = this.session.queue[1];
     this.ui.setProbeDock(c0 != null ? { color: c0, count: this.session.probes } : null, c1 != null ? { color: c1 } : null, this.session.prismArmed);
@@ -1092,7 +1109,20 @@ export class Game {
     if (!this.globe) return null;
     this.setRaycasterFromClient(clientX, clientY);
     const hits = this.raycaster.intersectObjects(this.globe.raycastTargets(), false);
-    return this.globe.resolveHit(hits);
+    // A grazing/limb tap can thread every bead instance's gaps at once, so the raycast finds
+    // no instance to hit at all — with no fallback, `resolveHit`'s own cloud-snap (item #9)
+    // never even runs. Compute where the ray meets the globe's own outer bounding sphere (same
+    // analytic technique as `screenToGlobeDir`'s comet-swipe fallback) and hand it to
+    // `resolveHit` so a visually-on-screen limb bead still resolves.
+    let fallbackPoint: THREE.Vector3 | null = null;
+    if (hits.length === 0) {
+      const centerWorld = this.globe.group.getWorldPosition(new THREE.Vector3());
+      const scale = this.globe.group.getWorldScale(new THREE.Vector3()).x || 1;
+      const sphere = new THREE.Sphere(centerWorld, this.globe.outerRadius() * scale);
+      const hitPoint = new THREE.Vector3();
+      if (this.raycaster.ray.intersectSphere(sphere, hitPoint)) fallbackPoint = hitPoint;
+    }
+    return this.globe.resolveHit(hits, fallbackPoint);
   }
 
   private pickBeadLocalPoint(clientX: number, clientY: number): THREE.Vector3 | null {
@@ -1256,6 +1286,77 @@ export class Game {
       if (hit && hit.shellId === s.b.shellId && hit.index === s.b.index) return { x, y };
     }
     return null;
+  }
+
+  /**
+   * QA-only (dev build, dead-code-eliminated from production, same as `qaTargetForCurrentProbe`):
+   * for every currently-alive, exposed `clouds` bead near the visible limb (facing the camera at a
+   * grazing angle, `0 < facing < 0.2`), checks whether a real pointer tap at its own screen position
+   * actually resolves back to that same bead via `pickBead` — i.e. whether the owner's "clouds can't
+   * be hit from every angle, especially near the limb" report reproduces. Returns a hit/near-miss
+   * count rather than a boolean so a Playwright script can quantify it across rotations.
+   */
+  private qaGrazingCloudHitTest(): { total: number; hit: number; rawMiss: number } | null {
+    if (!this.globe) return null;
+    const cloudShellId = this.globe.shells.findIndex((s) => s.kind === 'clouds');
+    if (cloudShellId === -1) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    const camPos = this.scene.camera.position;
+    let total = 0, hit = 0, rawMiss = 0;
+    const shell = this.globe.shells[cloudShellId];
+    for (let i = 0; i < shell.count; i++) {
+      if (!this.globe.isExposed(cloudShellId, i)) continue;
+      const p = this.globe.positionOf(cloudShellId, i);
+      const local = new THREE.Vector3(p.x, p.y, p.z);
+      const world = this.globe.group.localToWorld(local.clone());
+      const normal = local.clone().normalize().transformDirection(this.globe.group.matrixWorld);
+      const toCam = camPos.clone().sub(world).normalize();
+      const facing = normal.dot(toCam);
+      if (facing <= 0 || facing >= 0.15) continue;
+      const ndc = world.clone().project(this.scene.camera);
+      if (ndc.z > 1 || ndc.z < -1) continue;
+      const x = (ndc.x * 0.5 + 0.5) * rect.width + rect.left;
+      const y = (1 - (ndc.y * 0.5 + 0.5)) * rect.height + rect.top;
+      if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
+      total++;
+      this.setRaycasterFromClient(x, y);
+      const rawHits = this.raycaster.intersectObjects(this.globe.raycastTargets(), false);
+      if (rawHits.length === 0) rawMiss++;
+      // Success = resolves to *some* alive, hittable bead at all (landing on a visually-adjacent
+      // cloud bead instead of the exact one under the crosshair is normal at a grazing angle and
+      // not what the owner's report is about); a null result is the real "nothing happened" bug.
+      const result = this.pickBead(x, y);
+      if (result) hit++;
+    }
+    return { total, hit, rawMiss };
+  }
+
+  /**
+   * QA-only diagnostic: computes the same target `qaTargetForCurrentProbe` would and drives it
+   * through `handleGlobeTap` directly (in-process, no DOM/Playwright pointer event round trip) —
+   * isolates whether a failure to pop is in the game's own fire pipeline vs. in test click delivery
+   * (e.g. auto-spin moving the target between when a Playwright script reads coordinates and when
+   * its simulated pointer event actually lands). Returns the alive-count before/after so a script
+   * can tell whether this direct call actually popped anything.
+   */
+  private qaFireAtCurrentProbeDirect(): { before: number; after: number; hadTarget: boolean } | null {
+    if (!this.globe) return null;
+    const before = this.globe.aliveCount();
+    const target = this.qaTargetForCurrentProbe();
+    if (!target) return { before, after: before, hadTarget: false };
+    this.handleGlobeTap(target.x, target.y);
+    const after = this.globe.aliveCount();
+    return { before, after, hadTarget: true };
+  }
+
+  /** Read-only diagnostic for QA: per-shell alive/exposed counts, plus the session's own idea of "ended". */
+  private qaAliveBreakdown(): { shells: { kind: string; count: number; alive: number; exposedAlive: number }[]; totalAlive: number; isOver: boolean } | null {
+    if (!this.globe || !this.session) return null;
+    return {
+      shells: this.globe.debugShellBreakdown(),
+      totalAlive: this.globe.aliveCount(),
+      isOver: this.session.isOver,
+    };
   }
 
   // =============================================================== probe flights

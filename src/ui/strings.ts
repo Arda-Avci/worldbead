@@ -56,6 +56,10 @@ export const S = {
   lockedLevel: (n: number) => pick(`Lv ${n}`, `Sv ${n}`),
   nextPlanetIn: (planet: string, levels: number) =>
     pick(`Next planet: ${planet} — ${levels} level${levels === 1 ? '' : 's'}`, `Sıradaki gezegen: ${planet} — ${levels} seviye`),
+  /** Owner bug report: "the layered structure isn't there" — a small, always-visible cue on
+   * levels with more than one bead layer, so the player knows up front there's more underneath. */
+  layerProgress: (current: number, total: number) => pick(`Layer ${current}/${total}`, `Katman ${current}/${total}`),
+  layerCleared: pick('Layer cleared!', 'Katman tamamlandı!'),
 
   // ------------------------------------------------------------- toasts
   purchased: pick('Purchased!', 'Satın alındı!'),

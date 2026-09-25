@@ -35,6 +35,7 @@ export class GameUI {
   private readonly levelNum: HTMLElement;
   private readonly ring: HTMLElement;
   private readonly nextPlanetLine: HTMLElement;
+  private readonly layerLine: HTMLElement;
   private readonly gearBtn: HTMLElement;
 
   private readonly currentOrb: HTMLElement;
@@ -72,6 +73,7 @@ export class GameUI {
           <button class="wb-planet-badge wb-glass" type="button" data-planet-badge aria-label="${S.planetProgressAria}">
             <span class="wb-planet-name" data-planet-name>Earth</span>
             <span class="wb-level-line"><span class="wb-ring" data-ring style="--pct:0"></span><span data-level-num>${S.level(1)}</span></span>
+            <span class="wb-layer-line wb-hidden" data-layer-line></span>
             <span class="wb-next-planet-line wb-hidden" data-next-planet></span>
           </button>
           <button class="wb-gear-btn wb-glass" type="button" data-gear aria-label="${S.settingsAria}">${icon('gear')}</button>
@@ -118,6 +120,7 @@ export class GameUI {
     this.levelNum = q('[data-level-num]');
     this.ring = q('[data-ring]');
     this.nextPlanetLine = q('[data-next-planet]');
+    this.layerLine = q('[data-layer-line]');
     this.gearBtn = q('[data-gear]');
     this.currentOrb = q('[data-current-orb]');
     this.currentCount = q('[data-current-count]');
@@ -184,6 +187,20 @@ export class GameUI {
     } else {
       this.nextPlanetLine.classList.add('wb-hidden');
     }
+  }
+
+  /**
+   * Owner bug report: "the layered structure isn't there" — a small always-visible cue whenever
+   * a level has more than one bead layer, so the player knows up front there's more underneath
+   * (not shown at all on single-layer levels, so it stays out of the way most of the game).
+   */
+  setLayerProgress(current: number, total: number): void {
+    if (total <= 1) {
+      this.layerLine.classList.add('wb-hidden');
+      return;
+    }
+    this.layerLine.textContent = S.layerProgress(current, total);
+    this.layerLine.classList.remove('wb-hidden');
   }
 
   // ------------------------------------------------------------ probe dock

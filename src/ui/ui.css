@@ -544,6 +544,17 @@
   margin-top: 1px;
 }
 
+.wb-layer-line {
+  display: block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--wb-accent, #6ad2ff);
+  text-transform: none;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+
 .wb-btn-secondary {
   width: 100%;
   padding: 11px 18px;
