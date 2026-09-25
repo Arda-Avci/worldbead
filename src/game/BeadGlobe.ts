@@ -195,15 +195,34 @@ function readablePalette(paletteHex: number[]): ReadablePaletteResult {
   // texture's tones (owner correction — bead colors must match the actual
   // ground/ocean colors underneath). Only weak/near-duplicate centroids are
   // nudged, never a global saturation boost.
-  const MIN_L = 34;
-  const MAX_L = 84;
+  const MIN_L = 28;
+  const MAX_L = 90;
   const MIN_CHROMA = 16;
-  // Owner requirement #20: every color class must read as clearly distinct on
-  // a phone screen. ~20 CIE76 ΔE is a commonly-cited "clearly different color"
-  // threshold; pairs that still can't reach it after pushing lightness apart
-  // (a same-lightness, same-hue near-duplicate) are merged rather than left
-  // confusable, trading one fewer color for guaranteed distinguishability.
-  const MIN_DELTA_E = 20;
+  // Owner requirement #20 (round 1) + round 3's follow-up: every color class
+  // must read as *strongly*, clearly distinct on a phone screen, on every
+  // planet, not just Earth. ~20 CIE76 ΔE is a commonly-cited "clearly
+  // different color" threshold, but round 3's owner screenshots (Mars) showed
+  // that a palette sitting right at ΔE≈20 can still read as "shades of one
+  // brown" when every centroid shares the same hue — a real, low-hue-variance
+  // photo texture (Mars's rust/ochre surface) produces exactly that: several
+  // centroids that only differ in how light/dark the same brown is. Raised to
+  // 30 so the separation pass has to actually work harder before it's
+  // satisfied, and paired with the hue-rotation step below so that extra work
+  // spends some of its budget on hue, not lightness alone. Pairs that still
+  // can't reach it are merged rather than left confusable, trading one fewer
+  // color for guaranteed distinguishability.
+  const MIN_DELTA_E = 30;
+  // A too-close pair also gets pushed apart in hue (rotating each one's a/b
+  // vector around the Lab hue circle, in opposite directions), on top of the
+  // lightness push — never enough to leave the planet's hue family (Mars
+  // stays warm reds/oranges/browns, Venus stays warm creams, Jupiter stays
+  // its band tones), just enough that "clearly distinct classes" no longer
+  // depends on lightness doing all the work alone. True near-greys (Moon
+  // regolith/mare, chroma near 0) are effectively untouched by a hue
+  // rotation — rotating a near-zero vector is still near-zero — so they stay
+  // grey and separate only by lightness, exactly as intended.
+  const HUE_ROTATE_STEP_DEG = 6;
+  const MAX_HUE_ROTATE_DEG = 55;
 
   const labs: [number, number, number][] = paletteHex.map((hex) => {
     const r = ((hex >> 16) & 255) / 255, g = ((hex >> 8) & 255) / 255, b = (hex & 255) / 255;
@@ -225,7 +244,8 @@ function readablePalette(paletteHex: number[]): ReadablePaletteResult {
     lab[2] = b;
   }
 
-  for (let iter = 0; iter < 24; iter++) {
+  const hueRotated = new Array(labs.length).fill(0);
+  for (let iter = 0; iter < 48; iter++) {
     let changed = false;
     for (let i = 0; i < labs.length; i++) {
       for (let j = i + 1; j < labs.length; j++) {
@@ -239,6 +259,22 @@ function readablePalette(paletteHex: number[]): ReadablePaletteResult {
           } else {
             labs[j][0] = Math.min(92, labs[j][0] + need);
             labs[i][0] = Math.max(16, labs[i][0] - need);
+          }
+          if (hueRotated[i] < MAX_HUE_ROTATE_DEG) {
+            const step = Math.min(HUE_ROTATE_STEP_DEG, MAX_HUE_ROTATE_DEG - hueRotated[i]);
+            const rad = (step * Math.PI) / 180;
+            const [a, bch] = [labs[i][1], labs[i][2]];
+            labs[i][1] = a * Math.cos(rad) - bch * Math.sin(rad);
+            labs[i][2] = a * Math.sin(rad) + bch * Math.cos(rad);
+            hueRotated[i] += step;
+          }
+          if (hueRotated[j] < MAX_HUE_ROTATE_DEG) {
+            const step = Math.min(HUE_ROTATE_STEP_DEG, MAX_HUE_ROTATE_DEG - hueRotated[j]);
+            const rad = (-step * Math.PI) / 180;
+            const [a, bch] = [labs[j][1], labs[j][2]];
+            labs[j][1] = a * Math.cos(rad) - bch * Math.sin(rad);
+            labs[j][2] = a * Math.sin(rad) + bch * Math.cos(rad);
+            hueRotated[j] += step;
           }
           changed = true;
         }
@@ -484,7 +520,14 @@ function buildEarthCloudPaint(dirs: Float32Array, img: ImageDataLike, nbrStart: 
   return { keep, colorIdx, palette: GREY_WHITE_PALETTE };
 }
 
-const VENUS_CLOUD_PALETTE = [0xf6ecd2, 0xdcc48a]; // at most 2 tones
+// Owner requirement (round 3): the ΔE≥20(->30) readability pass must apply to
+// every planet, but Venus's "surface" is this fixed 2-tone constant, not a
+// texture run through `readablePalette()`, so it needs the same bar applied
+// by hand. The old pair (0xf6ecd2, 0xdcc48a) was only ~23 ΔE apart — both
+// very light creams that bloom/tonemap could (and did, per the owner's
+// screenshot) wash into a near-uniform white ball. Widened to ~38 ΔE while
+// staying in the same warm-cream family (no grey/blue introduced).
+const VENUS_CLOUD_PALETTE = [0xf6ecd2, 0xb8905a]; // at most 2 tones
 
 /** Venus: procedural cream bands, always present (no real cloud texture for Venus). */
 function buildVenusCloudPaint(dirs: Float32Array, seed: number): Int16Array {

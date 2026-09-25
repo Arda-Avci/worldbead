@@ -705,6 +705,10 @@ fire-ignite, and the level-210 undimmed view). `npm run build` passes clean
 (`tsc --noEmit && vite build`, no new warnings beyond the pre-existing
 "chunk larger than 500kB" notice).
 
+(`docs/INVASION_INTEGRATION.md`, the pre-wiring plan referenced above, was
+later deleted once its wiring was fully done — see the "deleted (YAGNI)"
+section near the end of this file.)
+
 ## Open items
 
 - iOS platform (`npx cap add ios`) and its GitHub Actions workflow — needs
@@ -890,3 +894,84 @@ computation from `getLevel()`, not eyeballed from screenshots.
   never committed to the repo) rather than assumed from code reading
   alone, per the pattern this project has needed twice now (owner
   screenshots catching things code review missed).
+
+## Color distinguishability on every planet, not just Earth (owner review round 3)
+
+- **Root cause**: `readablePalette()` (`src/game/BeadGlobe.ts`) already
+  enforced a ΔE≥20 floor between every pair of a shell's final colors, but
+  it only pushed **lightness** apart to get there. A real, low-hue-variance
+  photo texture — Mars's rust/ochre surface is the extreme case — produces
+  k-means centroids that are already the *same hue*, just at slightly
+  different brightness; pushing lightness alone can clear ΔE≥20 between two
+  such centroids while a human still reads them as "one brown, some
+  darker/lighter" rather than genuinely different classes. Confirmed
+  numerically before touching anything: dumped the real in-game palettes at
+  levels 25/35/45/80 and saw Mars sitting at minΔE 20.0–20.1 — technically
+  passing, but every color in the palette was a shade of the same
+  orange-brown.
+- **Fix**: `readablePalette()` now also rotates each too-close pair's a/b
+  (hue) vector apart in Lab space, in opposite directions, on top of the
+  existing lightness push, capped at 45°→55° of cumulative rotation per
+  color so a planet never leaves its own hue family (Mars stays warm
+  reds/oranges/browns, Venus stays warm creams, Jupiter stays its band
+  tones) — it only stops relying on lightness alone. A near-grey color
+  (chroma ≈ 0, e.g. Moon regolith/mare) is essentially untouched by hue
+  rotation (rotating a near-zero vector is still near-zero), so the Moon
+  correctly stays grey, separated only by lightness, exactly matching the
+  owner's own "Moon greys" example. The ΔE floor itself was also raised
+  from 20 to 30 (`MIN_DELTA_E`), since round 1's target of "technically
+  passes 20" was exactly what produced the muddy-Mars complaint; 30 forces
+  the separation pass to actually work, and combined with hue rotation
+  gives real headroom instead of every palette sitting right at the wire.
+  `MIN_L`/`MAX_L` widened slightly (34–84 → 28–90) and the convergence loop
+  extended (24 → 48 iterations) since the harder target needs more room and
+  more passes to satisfy before the safety-net merge kicks in.
+- **Venus needed a separate, manual fix**: Venus's entire visible "surface"
+  is a fixed 2-tone constant (`VENUS_CLOUD_PALETTE`), painted procedurally
+  by `buildVenusCloudPaint()` — it never goes through `readablePalette()`
+  at all, so the ΔE fix above doesn't reach it. The old pair (`0xf6ecd2`,
+  `0xdcc48a`) measured only ~23 ΔE apart, both very light creams that
+  bloom/tonemap wash toward a near-uniform white ball. Widened by hand to
+  (`0xf6ecd2`, `0xb8905a`) — ~38 ΔE, still the same warm-cream family, no
+  grey/blue introduced. Flagging honestly rather than overclaiming: this
+  numeric fix is real and verified, but the `?level=35` screenshot
+  (`after5/level35_venus.png`/`_20s.png`) still reads as a near-uniform
+  bright ball at this particular camera framing/auto-spin phase — Venus's
+  band pattern is a latitude split (equatorial vs. polar), the gameplay
+  camera mostly frames the equatorial band, and auto-spin rotates around
+  the same axis the bands are defined on, so the poles where the second
+  tone dominates rarely rotate into view; on top of that, bloom/clearcoat
+  specular on a light cream bead is naturally close to blown-out white
+  regardless of the underlying hex value. Neither of those is something
+  this round's ΔE fix could or should have touched (they're camera framing
+  and shared bloom/material settings, not a color-readability bug per se,
+  and Venus wasn't the planet the owner's own screenshots named) — left as
+  an open observation rather than scope-creeping into a lighting/bloom
+  change nobody asked for this round.
+- Verified per-planet minΔE at the requested checkpoint levels (console
+  `[BeadGlobe] level N palette minDeltaE`, direct from the real pipeline,
+  not eyeballed):
+
+| Level | Planet | minΔE (before) | minΔE (after) |
+|---|---|---|---|
+| 25 | Mars | 20.1 | 31.9 |
+| 35 | Venus (surface, pre-cloud) | 20.1 | 34.6 |
+| 35 | Venus (cloud palette, hand-fixed) | ~23 (not ΔE-checked) | ~38.4 |
+| 45 | Jupiter | 20.3 | 30.1 |
+| 80 | Mars | 20.0 | 30.5 |
+
+  Sanity-checked no regression on the two planets that were already fine:
+  Earth (level 2) 37.9→37.9 unchanged, Moon (level 11) stays grey at 30.4.
+  Screenshots in `scratchpad/after5/` (never committed): `level25_mars.png`,
+  `level35_venus.png` (+`_20s.png`), `level45_jupiter.png`,
+  `level80_mars.png` — Mars now clearly shows dark basalt-brown, rust-red,
+  and pale dust/ochre as separate legible classes rather than one brown
+  blob, at both its first (25) and post-invasion-tutorial (80) checkpoint.
+
+## `docs/INVASION_INTEGRATION.md` deleted (YAGNI)
+
+Deleted per the owner's instruction once its wiring plan was fully done and
+verified (see the two "Alien invasion" sections above) — everything the
+plan doc proposed (call sequence, config constants, tutorial copy, visual
+fixes) is implemented as described, so the doc had nothing left to say that
+this file doesn't already cover.
