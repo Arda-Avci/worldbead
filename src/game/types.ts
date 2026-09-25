@@ -42,4 +42,30 @@ export interface GlobeAdapter {
   beadsInBand(normal: Vec3, halfWidth: number): BeadRef[];
   /** Marks the given beads popped (dead) and queues their FX events. */
   pop(beads: BeadRef[]): void;
+
+  // ---- Optional: alien-invasion "fire" mechanic (see `src/game/invasion.ts`). ----
+  // A `GlobeAdapter` that doesn't implement these simply can't host fire
+  // beads: `InvasionController` feature-detects them and degrades
+  // gracefully (ships still approach/charge/fire, but beads never
+  // ignite/spread), so a globe without them is otherwise unaffected.
+
+  /**
+   * Alive neighbor beads of (shellId, index) on that shell's own neighbor
+   * graph, regardless of current color or cloud coverage. Used only to
+   * spread fire to adjacent beads.
+   */
+  neighborsOf?(shellId: number, index: number): BeadRef[];
+
+  /**
+   * Reassigns the given beads' logical color to `colorHex` (adding it to
+   * the shell's palette if it isn't already there) without popping them, so
+   * they keep counting toward `aliveCount()`/win and `colorAt()` reports
+   * `colorHex` for them from then on — a same-colored "extinguish" probe
+   * fired at one of them pops the whole connected patch exactly like any
+   * other region, through the existing `region()`/`pop()` path. Also
+   * updates their rendered instance color to `colorHex`; an ongoing
+   * flicker/glow animation on top of that (if any) is the implementation's
+   * own concern, not the caller's.
+   */
+  igniteFire?(beads: BeadRef[], colorHex: number): void;
 }

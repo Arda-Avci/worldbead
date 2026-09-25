@@ -31,6 +31,9 @@ import {
 import { FACTS, randomFactFor } from './facts';
 import type { BeadRef } from './types';
 import { PLANET_NAMES, POWER_NAMES, S } from '../ui/strings';
+import { invasionConfigForLevel, InvasionController, FIRE_COLOR, type InvasionEvent } from './invasion';
+import { AlienInvasionRenderer } from '../render/aliens';
+import { FireEmberSystem } from '../render/fireEmbers';
 
 type FlowState = 'boot' | 'playing' | 'resolving';
 
@@ -72,7 +75,60 @@ const UNLOCK_INFO: Partial<Record<UnlockId, { icon: string; name: string; descri
   cloudLayer: { icon: 'star', name: S.unlockName.cloudLayer, description: S.unlockDescription.cloudLayer },
   newLayer: { icon: 'star', name: S.unlockName.newLayer, description: S.unlockDescription.newLayer },
   cloudDrift: { icon: 'star', name: S.unlockName.cloudDrift, description: S.unlockDescription.cloudDrift },
+  invasion: { icon: 'ship', name: S.unlockName.invasion, description: S.unlockDescription.invasion },
 };
+
+/** Generous, phone-friendly hit radius (world units) a tap must land within to destroy a ship — see `AlienInvasionRenderer`'s own copy for the raycast test itself; kept here too for the tutorial's spotlight sizing. */
+const SHIP_HIT_RADIUS = 0.2;
+
+// ---- Alien invasion approach-path helper (item #1/#2), copied verbatim from `src/render/aliens-demo.ts` ----
+// per `docs/INVASION_INTEGRATION.md`; needs nothing demo-specific.
+
+/** Keeps the ship's hover position fully on-screen in portrait: the target bead itself only has
+ * to be within ~50deg of the view direction (see `InvasionController.pickImpactTarget`), which is
+ * far wider than this camera's frustum — so we clamp *where the ship hovers* to a safe NDC box
+ * instead of flying it straight to the target's own screen position. The laser still fires at the
+ * real target, so the beam visibly travels from the (always visible) ship toward it. */
+const HOVER_NDC_X = 0.62;
+const HOVER_NDC_Y_TOP = 0.42; // extra headroom — a ship must never crop against the top edge in portrait
+const HOVER_NDC_Y_BOTTOM = 0.72;
+
+/** The point at distance `radius` from the origin along the ray from `camPos` through `dir`, nearest the camera. */
+function pointAtRadiusAlongRay(camPos: THREE.Vector3, dir: THREE.Vector3, radius: number): THREE.Vector3 {
+  const b = camPos.dot(dir);
+  const c = camPos.lengthSq() - radius * radius;
+  const disc = b * b - c;
+  const t = disc >= 0 ? -b - Math.sqrt(disc) : -b; // front intersection, or closest approach if the ray misses the sphere
+  return camPos.clone().addScaledVector(dir, Math.max(0.1, t));
+}
+
+/**
+ * Builds a ship's approach path so that, once hovering, it sits roughly between the camera and
+ * its real target (so the beam it eventually fires visibly travels toward that target) while
+ * staying fully inside a safe on-screen box the whole time. The spawn point is placed a fixed
+ * extra distance *behind* the hover point along the same camera ray (not "distance from the world
+ * origin" — with the gameplay camera sitting only ~5.6 units from the globe's center, a
+ * from-origin radius close to that distance put the spawn point almost on top of the camera,
+ * making the ship flash enormous for the first instant of its approach — a real bug found via a
+ * screenshot of the actual approach animation, not just the settled hover frame).
+ */
+function computeApproachPath(camera: THREE.PerspectiveCamera, targetWorld: THREE.Vector3 | null): { from: THREE.Vector3; to: THREE.Vector3 } {
+  const camPos = camera.position.clone();
+  let dir: THREE.Vector3;
+  if (targetWorld) {
+    const ndc = targetWorld.clone().project(camera);
+    const cx = THREE.MathUtils.clamp(ndc.x, -HOVER_NDC_X, HOVER_NDC_X);
+    const cy = THREE.MathUtils.clamp(ndc.y, -HOVER_NDC_Y_BOTTOM, HOVER_NDC_Y_TOP);
+    const pt = new THREE.Vector3(cx, cy, 0.5).unproject(camera);
+    dir = pt.sub(camPos).normalize();
+  } else {
+    dir = camera.getWorldDirection(new THREE.Vector3());
+  }
+  const to = pointAtRadiusAlongRay(camPos, dir, 2.6);
+  const toDist = camPos.distanceTo(to);
+  const from = camPos.clone().addScaledVector(dir, toDist + 6);
+  return { from, to };
+}
 
 const textureCache = new Map<string, ImageDataLike>();
 async function loadTexture(name: TextureName): Promise<ImageDataLike> {
@@ -98,6 +154,14 @@ export class Game {
   private currentPlanetLoaded: PlanetId | null = null;
   private buildToken = 0;
   private levelTotalBeads = 0;
+
+  // alien invasion (see `src/game/invasion.ts`)
+  private readonly aliens = new AlienInvasionRenderer();
+  private readonly fireEmbers = new FireEmberSystem();
+  private invasion: InvasionController | null = null;
+  private invasionElapsed = 0;
+  private lastFireCrackleAt = -10;
+  private pendingInvasionResolve: (() => void) | null = null;
 
   private state: FlowState = 'boot';
   private acceptInput = false;
@@ -139,6 +203,13 @@ export class Game {
       onReplayIntro: () => void this.replayIntro(),
     });
     this.tutorial = new Tutorial(hudRoot);
+
+    // Ships live in world space (they hover between the camera and the globe, independent of its
+    // rotation); fire particles live on the same rotating frame as the beads (`scene.spin`, the
+    // parent every level's `BeadGlobe.group` is added to — see `prepareLevel`) so they track the
+    // globe's spin/drag exactly like the beads they rise from.
+    this.scene.scene.add(this.aliens.group);
+    this.scene.spin.add(this.fireEmbers.object);
 
     this.progress = loadProgress();
     this.ui.setSettings(this.progress.settings);
@@ -389,6 +460,17 @@ export class Game {
     });
     this.cfg = cfg;
     this.armedPower = null;
+
+    // Alien invasion: a fresh per-level controller (null on a level with no invasion — see
+    // `invasionConfigForLevel`). Any ships/particles left over from a level exited early (a win or
+    // retry mid-attack) are cleared instantly rather than carried over onto the new globe.
+    this.aliens.reset();
+    this.invasion = null;
+    this.invasionElapsed = 0;
+    this.lastFireCrackleAt = -10;
+    const invasionCfg = invasionConfigForLevel(cfg.level);
+    if (invasionCfg) this.invasion = new InvasionController(globe, invasionCfg);
+
     this.scene.configureSpin(cfg.seed, cfg.autoSpinEnabled, (cfg.level - 1) / (MAX_LEVEL - 1), cfg.spinTiltEnabled, cfg.spinReverseEnabled);
     this.orientToStart(cfg);
     this.updateHud();
@@ -604,6 +686,18 @@ export class Game {
         this.pendingHitResolve = null;
         break;
       }
+      case 'invasion': {
+        // Blocks until the first ship either fires (it out-waited the player) or is destroyed by a
+        // tap — the player doesn't have to succeed, just see the mechanic once (matches the
+        // meteor/comet-style scripts above). `shipScreenCircle()` returns null until the ship
+        // actually spawns, which the Tutorial engine already treats as "keep input blocked, no
+        // spotlight yet" (see its own doc comment).
+        const until = new Promise<void>((res) => (this.pendingInvasionResolve = res));
+        await this.tutorial.run([{ caption: S.tutorial.invasionShip, target: () => this.shipScreenCircle(), gesture: 'tap', until }]);
+        this.pendingInvasionResolve = null;
+        if (this.invasion?.isFireActive()) this.ui.showToast(S.tutorial.invasionFire);
+        break;
+      }
     }
   }
 
@@ -695,7 +789,30 @@ export class Game {
   }
 
   private handleGlobeTap(clientX: number, clientY: number): void {
-    if (!this.session || !this.globe || this.session.probes <= 0) return;
+    if (!this.session || !this.globe) return;
+
+    // Ships before beads (item #4): a generous, phone-friendly hit test (distance-to-ray, not the
+    // ship's actual small silhouette — see `AlienInvasionRenderer.raycastShips`) runs first and, on
+    // a hit, consumes the tap entirely — no probe is spent and no bead behind the ship is also hit.
+    // Destroying a ship is free even with 0 probes left, matching the GDD-style "tap a ship to
+    // destroy it" feel (a probe is only ever spent on a bead tap).
+    if (this.invasion) {
+      this.setRaycasterFromClient(clientX, clientY);
+      const shipIds = this.aliens.raycastShips(this.raycaster);
+      if (shipIds.length > 0 && this.invasion.destroyShip(shipIds[0])) {
+        this.aliens.destroyShip(shipIds[0]);
+        this.audio.play('shipExplode');
+        haptic('medium');
+        if (this.pendingInvasionResolve) {
+          const r = this.pendingInvasionResolve;
+          this.pendingInvasionResolve = null;
+          r();
+        }
+        return;
+      }
+    }
+
+    if (this.session.probes <= 0) return;
 
     if (this.armedPower === 'meteor') {
       const local = this.pickBeadLocalPoint(clientX, clientY);
@@ -740,8 +857,23 @@ export class Game {
       } else {
         this.disposeProbeObj(obj);
       }
+      this.applyInvasionShotOutcome();
       this.handleEvents(events);
     });
+  }
+
+  /**
+   * Runs after every `session.fire()` call (hit or miss) while this level's invasion is active
+   * (item #5): drives the fire-spread cadence and, on the shot the config says to, forces the
+   * *next* queue slot to the fire color so the player is offered an extinguish probe. Popping a
+   * fire patch itself needs no extra rules code — `GameSession.fire()` already pops any
+   * same-colored connected region, fire included (see `docs/INVASION_INTEGRATION.md`).
+   */
+  private applyInvasionShotOutcome(): void {
+    if (!this.invasion || !this.session) return;
+    const outcome = this.invasion.onShotFired();
+    if (outcome.spread.length) this.audio.play('fireCrackle', { intensity: 0.4 });
+    if (outcome.queueOverrideColor !== null) this.session.queue[1] = outcome.queueOverrideColor;
   }
 
   private onPowerButton(id: PowerId): void {
@@ -838,7 +970,12 @@ export class Game {
         case 'fire':
           if (ev.result === 'hit') {
             this.burstDrainedPops(ev.poppedCount);
-            this.audio.play(ev.combo ? 'bigPop' : 'pop', { intensity: THREE.MathUtils.clamp(ev.poppedCount / 60, 0.2, 1.4) });
+            if (ev.color === FIRE_COLOR) {
+              // Item #5: popping a fire patch reads as putting it out, not a normal pop.
+              this.audio.play('extinguish', { intensity: THREE.MathUtils.clamp(ev.poppedCount / 20, 0.4, 1.3) });
+            } else {
+              this.audio.play(ev.combo ? 'bigPop' : 'pop', { intensity: THREE.MathUtils.clamp(ev.poppedCount / 60, 0.2, 1.4) });
+            }
             haptic(ev.combo ? 'medium' : 'light');
             if (ev.combo) this.ui.showCombo(ev.poppedCount);
             if (this.pendingHitResolve) {
@@ -945,11 +1082,15 @@ export class Game {
 
   // =============================================================== picking helpers
 
-  private pickBead(clientX: number, clientY: number): { shellId: number; index: number; point: THREE.Vector3 } | null {
-    if (!this.globe) return null;
+  private setRaycasterFromClient(clientX: number, clientY: number): void {
     const rect = this.canvas.getBoundingClientRect();
     const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.scene.camera);
+  }
+
+  private pickBead(clientX: number, clientY: number): { shellId: number; index: number; point: THREE.Vector3 } | null {
+    if (!this.globe) return null;
+    this.setRaycasterFromClient(clientX, clientY);
     const hits = this.raycaster.intersectObjects(this.globe.raycastTargets(), false);
     return this.globe.resolveHit(hits);
   }
@@ -1007,6 +1148,26 @@ export class Game {
     const ey = (1 - (e2.y * 0.5 + 0.5)) * rect.height + rect.top;
     const r = Math.max(60, Math.hypot(ex - cx, ey - cy));
     return { x: cx, y: cy, r };
+  }
+
+  /** Screen-space circle around the first still-attacking ship, for the invasion tutorial's spotlight. Null until a ship has actually spawned into view. */
+  private shipScreenCircle(): ScreenCircle | null {
+    if (!this.invasion) return null;
+    const ship = this.invasion.getShips().find((s) => s.phase !== 'destroyed' && s.phase !== 'fired');
+    if (!ship) return null;
+    const pos = this.aliens.getShipWorldPosition(ship.id);
+    if (!pos) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    const ndc = pos.clone().project(this.scene.camera);
+    if (ndc.z > 1) return null;
+    const x = (ndc.x * 0.5 + 0.5) * rect.width + rect.left;
+    const y = (1 - (ndc.y * 0.5 + 0.5)) * rect.height + rect.top;
+    const edge = pos.clone().add(new THREE.Vector3(SHIP_HIT_RADIUS, 0, 0));
+    const endc = edge.project(this.scene.camera);
+    const ex = (endc.x * 0.5 + 0.5) * rect.width + rect.left;
+    const ey = (1 - (endc.y * 0.5 + 0.5)) * rect.height + rect.top;
+    const r = Math.max(50, Math.hypot(ex - x, ey - y) * 1.3);
+    return { x, y, r };
   }
 
   private beadScreenCircle(beads: BeadRef[] | null): ScreenCircle | null {
@@ -1165,10 +1326,96 @@ export class Game {
       this.scene.update(Math.min(rawDt, 0.1));
       // Bead animations are absolute-time-based; let them catch up in one jump after a stalled frame.
       this.globe?.update(Math.min(rawDt, 2));
+      this.updateInvasion(dt);
       this.scene.render();
       requestAnimationFrame(loop);
     };
     requestAnimationFrame(loop);
+  }
+
+  // =============================================================== alien invasion
+
+  /**
+   * Ticks this level's invasion (if any), maps its events to render/audio, and keeps the ship/fire
+   * visuals animating every frame. `InvasionController`'s own clock only advances while the level
+   * is actually being played (`this.state === 'playing'`) so nothing schedules during loading/win/
+   * lose, but the renderers themselves always get `update()` so an in-flight explosion or laser
+   * still finishes smoothly even the instant the level ends.
+   */
+  private updateInvasion(dt: number): void {
+    this.aliens.update(dt);
+    if (!this.globe) {
+      this.fireEmbers.update(dt, []);
+      return;
+    }
+    if (this.invasion && this.state === 'playing') {
+      this.invasionElapsed += dt;
+      // Same "camera position in globe-local space" trick Solar Flare already uses, so a laser
+      // impact (and the ship that flies in already knowing it) always lands on the hemisphere the
+      // player can actually see.
+      const camLocal = this.globe.group.worldToLocal(this.scene.camera.position.clone());
+      const events = this.invasion.tick(dt, { x: camLocal.x, y: camLocal.y, z: camLocal.z });
+      for (const ev of events) this.handleInvasionEvent(ev);
+      for (const ship of this.invasion.getShips()) {
+        if (ship.phase === 'charging') this.aliens.setCharging(ship.id, this.invasion.chargeProgress(ship.id));
+      }
+      if (this.invasion.isFireActive() && this.invasionElapsed - this.lastFireCrackleAt > 1.6) {
+        this.audio.play('fireCrackle', { intensity: 0.3 });
+        this.lastFireCrackleAt = this.invasionElapsed;
+      }
+    }
+    const firePositions = this.invasion
+      ? this.invasion.fireBeadRefs().map((b) => {
+          const p = this.globe!.positionOf(b.shellId, b.index);
+          return new THREE.Vector3(p.x, p.y, p.z);
+        })
+      : [];
+    this.fireEmbers.update(dt, firePositions);
+  }
+
+  private handleInvasionEvent(ev: InvasionEvent): void {
+    if (!this.invasion || !this.globe) return;
+    switch (ev.type) {
+      case 'shipSpawned': {
+        const targetWorld = ev.target
+          ? (() => {
+              const p = this.globe!.positionOf(ev.target!.shellId, ev.target!.index);
+              return this.globe!.group.localToWorld(new THREE.Vector3(p.x, p.y, p.z));
+            })()
+          : null;
+        const path = computeApproachPath(this.scene.camera, targetWorld);
+        const ship = this.invasion.getShips().find((s) => s.id === ev.id);
+        const arriveSeconds = Math.max(0.1, (ship?.arriveAt ?? this.invasionElapsed) - this.invasionElapsed);
+        this.aliens.spawnShip(ev.id, { fromWorldPos: path.from, toWorldPos: path.to, arriveSeconds });
+        this.audio.play('shipArrive');
+        break;
+      }
+      case 'shipArrived':
+        this.audio.play('laserCharge');
+        break;
+      case 'laserFired': {
+        const p = this.globe.positionOf(ev.target.shellId, ev.target.index);
+        const world = this.globe.group.localToWorld(new THREE.Vector3(p.x, p.y, p.z));
+        this.aliens.fireLaser(ev.id, world);
+        this.audio.play('laserFire');
+        this.scene.shake(0.25);
+        if (this.pendingInvasionResolve) {
+          const r = this.pendingInvasionResolve;
+          this.pendingInvasionResolve = null;
+          r();
+        }
+        break;
+      }
+      case 'fireIgnited': {
+        this.audio.play('fireCrackle', { intensity: 0.6 });
+        const positions = ev.beads.map((b) => {
+          const p = this.globe!.positionOf(b.shellId, b.index);
+          return new THREE.Vector3(p.x, p.y, p.z);
+        });
+        this.fireEmbers.spawnIgnite(positions);
+        break;
+      }
+    }
   }
 }
 

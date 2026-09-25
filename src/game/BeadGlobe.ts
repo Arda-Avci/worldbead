@@ -11,6 +11,7 @@ import type { LevelConfig } from './levels';
 import type { ImageDataLike } from './texture';
 import { sampleEquirect } from './texture';
 import type { BeadRef, GlobeAdapter, PopEvent, Vec3 } from './types';
+import { FIRE_COLOR } from './invasion';
 
 export type TextureName = 'earth_daymap' | 'earth_clouds' | 'moon' | 'venus_surface' | 'mars' | 'jupiter';
 export type TextureMap = Partial<Record<TextureName, ImageDataLike>>;
@@ -50,6 +51,10 @@ interface Shell {
   animDur?: number;
   animEnd?: number;
   animMode?: 'assembling' | 'bursting';
+  /** Alien invasion (item #22): palette index reserved for `FIRE_COLOR` on this shell, once first ignited (lazy — most shells never need one). */
+  fireColorIdx?: number;
+  /** Alien invasion: bead index -> `animClock` time it was ignited, for the brief bright "just caught fire" pulse. Cleared once the pulse fades. */
+  ignitedAt?: Map<number, number>;
 }
 
 interface PopAnim {
@@ -62,6 +67,12 @@ interface PopAnim {
 const RAD = 180 / Math.PI;
 const tmpM = new THREE.Matrix4();
 const tmpV = new THREE.Vector3();
+/** Fire flicker/pulse scratch colors (item #22) — hot is a near-white-hot orange-yellow, well past any planet palette's max lightness. */
+const fireEmber = new THREE.Color();
+const fireHot = new THREE.Color(0xffee66);
+const fireWhite = new THREE.Color(0xffffff);
+const fireTmp = new THREE.Color();
+const FIRE_PULSE_DURATION = 0.45;
 const tmpQ = new THREE.Quaternion();
 const tmpS = new THREE.Vector3();
 const tmpC = new THREE.Color();
@@ -909,6 +920,76 @@ export class BeadGlobe implements GlobeAdapter {
     return out;
   }
 
+  // ---------------- alien invasion: fire (see `src/game/invasion.ts`) ----------------
+
+  /** `GlobeAdapter.neighborsOf` — alive neighbors of a bead on that shell's own neighbor graph, regardless of color/coverage. */
+  neighborsOf(shellId: number, index: number): BeadRef[] {
+    const s = this.shells[shellId];
+    const out: BeadRef[] = [];
+    for (let p = s.nbrStart[index]; p < s.nbrStart[index + 1]; p++) {
+      const j = s.nbrList[p];
+      if (s.alive[j]) out.push({ shellId, index: j });
+    }
+    return out;
+  }
+
+  /**
+   * `GlobeAdapter.igniteFire` — reassigns each bead's logical color to
+   * `colorHex` (a lazily-added, per-shell palette entry so repeated calls
+   * don't grow the palette) without popping it, paints it immediately, and
+   * records when it caught fire for the ignite-pulse in `updateFireFlicker`.
+   */
+  igniteFire(beads: BeadRef[], colorHex: number): void {
+    const touched = new Set<Shell>();
+    for (const b of beads) {
+      const shell = this.shells[b.shellId];
+      if (!shell.alive[b.index]) continue;
+      if (shell.fireColorIdx === undefined) {
+        shell.fireColorIdx = shell.palette.length;
+        shell.palette.push(colorHex);
+      }
+      shell.colorIdx[b.index] = shell.fireColorIdx;
+      if (!shell.ignitedAt) shell.ignitedAt = new Map();
+      shell.ignitedAt.set(b.index, this.animClock);
+      tmpC.setHex(colorHex);
+      shell.mesh.setColorAt(b.index, tmpC);
+      touched.add(shell);
+    }
+    for (const shell of touched) if (shell.mesh.instanceColor) shell.mesh.instanceColor.needsUpdate = true;
+  }
+
+  /**
+   * Per-bead ember flicker (two mismatched sine frequencies + per-index
+   * phase offset, dim ember red -> hot orange-yellow) plus a brief bright
+   * white "just ignited" pulse, for every bead currently on fire. Chosen to
+   * read as unmistakably distinct from every planet's own static k-means
+   * palette (including Mars's rust/red-orange, the closest hue neighbor):
+   * fire is far more saturated, its top flicker tone is near-white-hot
+   * (well past any planet palette's max lightness), and — unlike any static
+   * bead color — it visibly animates every frame.
+   */
+  private updateFireFlicker(): void {
+    for (const shell of this.shells) {
+      if (shell.fireColorIdx === undefined) continue;
+      let any = false;
+      for (let i = 0; i < shell.colorIdx.length; i++) {
+        if (!shell.alive[i] || shell.colorIdx[i] !== shell.fireColorIdx) continue;
+        any = true;
+        const flick = 0.55 + 0.225 * Math.sin(this.animClock * 9 + i * 0.7) + 0.225 * Math.sin(this.animClock * 21.3 - i * 1.3);
+        fireEmber.setHex(FIRE_COLOR).lerp(fireHot, Math.max(0, Math.min(1, flick)));
+        fireTmp.copy(fireEmber);
+        const t0 = shell.ignitedAt?.get(i);
+        if (t0 !== undefined) {
+          const age = this.animClock - t0;
+          if (age < FIRE_PULSE_DURATION) fireTmp.lerp(fireWhite, (1 - age / FIRE_PULSE_DURATION) * 0.9);
+          else shell.ignitedAt!.delete(i);
+        }
+        shell.mesh.setColorAt(i, fireTmp);
+      }
+      if (any && shell.mesh.instanceColor) shell.mesh.instanceColor.needsUpdate = true;
+    }
+  }
+
   // ---------------- tutorial targeting helpers (integration layer only) ----------------
 
   /**
@@ -1063,6 +1144,7 @@ export class BeadGlobe implements GlobeAdapter {
     this.updatePops(dirty);
     this.updateFlyAnims(dirty);
     this.updateCloudDrift(dt);
+    this.updateFireFlicker();
     for (const s of dirty) s.mesh.instanceMatrix.needsUpdate = true;
   }
 

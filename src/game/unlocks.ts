@@ -3,8 +3,9 @@
 export type PowerId = 'meteor' | 'prism' | 'solarFlare' | 'comet';
 
 import { FIRST_CLOUD_LEVEL } from './levels';
+import { INVASION_FIRST_LEVEL } from './invasion';
 
-export type UnlockId = 'fire' | 'rotate' | 'swap' | PowerId | 'cloudLayer' | 'newPlanet' | 'newLayer' | 'cloudDrift';
+export type UnlockId = 'fire' | 'rotate' | 'swap' | PowerId | 'cloudLayer' | 'newPlanet' | 'newLayer' | 'cloudDrift' | 'invasion';
 
 export interface UnlockEntry {
   level: number;
@@ -24,6 +25,11 @@ export const UNLOCKS: UnlockEntry[] = [
   // number, so the tutorial fires exactly when clouds first physically appear.
   { level: FIRST_CLOUD_LEVEL, id: 'cloudLayer', tutorial: 'cloudLayer' },
   { level: 60, id: 'comet', tutorial: 'comet' },
+  // Alien invasion (owner: Arda): first guaranteed encounter, synced to `INVASION_FIRST_LEVEL`
+  // rather than a separate hardcoded number. Landed well after every other unlock (comet at 60
+  // is the last) and well past the last blocking tutorial (cloudDrift at 33), so the player has
+  // the full toolkit and a calm stretch before this new difficulty axis appears.
+  { level: INVASION_FIRST_LEVEL, id: 'invasion', tutorial: 'invasion' },
   // 'newPlanet' is no longer a fixed level here: with the planet rotating every
   // 10 levels (item #15) it's shown dynamically in `Game.ts` at the start of
   // every planet slot after the first, keyed per-level like everything else.

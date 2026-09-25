@@ -89,6 +89,7 @@ export const S = {
     newLayer: pick('New Layer', 'Yeni Katman'),
     autoSpin: pick('The World Turns', 'Dünya Dönüyor'),
     cloudDrift: pick('Drifting Clouds', 'Sürüklenen Bulutlar'),
+    invasion: pick('Alien Invasion', 'Uzaylı İstilası'),
   },
   unlockDescription: {
     swap: pick('Swap your current and next probe colors.', 'Aktif ve sıradaki mermi renklerini değiştir.'),
@@ -100,6 +101,7 @@ export const S = {
     newLayer: pick('The globe now has an extra outer layer. Clear it to reach the finer beads underneath.', 'Küre artık ekstra bir dış katmana sahip. Altındaki daha ince boncuklara ulaşmak için onu temizle.'),
     autoSpin: pick('The globe now keeps turning on its own. Dragging still works — just push through it.', 'Küre artık kendi kendine dönmeye başladı. Sürüklemek hâlâ işe yarar — sadece biraz daha zorlanacaksın.'),
     cloudDrift: pick('These clouds now drift on their own, sliding over the beads and blocking shots until they move on — or you pop them.', 'Bu bulutlar artık kendi kendine sürükleniyor, boncukların üzerinde kayıyor ve geçene ya da onları patlatana kadar atışları engelliyor.'),
+    invasion: pick('Alien ships can now appear. Tap a ship to destroy it before it fires — its laser sets beads on fire.', 'Artık uzaylı gemileri belirebilir. Ateş etmeden önce gemiye dokunarak yok et — lazeri boncukları ateşe verir.'),
   },
 
   // ------------------------------------------------------------ tutorial
@@ -118,6 +120,8 @@ export const S = {
     cometArm: pick('Tap Comet to arm it.', 'Kuyruklu yıldızı hazırlamak için dokun.'),
     cometUse: pick('Swipe across the world.', 'Dünyanın üzerinde kaydır.'),
     cloudDrift: pick('Wait for a gap, or pop through the drifting clouds.', 'Bir boşluk bekle ya da sürüklenen bulutları patlatarak geç.'),
+    invasionShip: pick('An alien ship is approaching — tap it to destroy it before it fires!', 'Bir uzaylı gemisi yaklaşıyor — ateş etmeden önce ona dokunarak yok et!'),
+    invasionFire: pick('Its laser set part of the planet on fire. Look for a fire-colored probe to put it out.', 'Lazeri gezegenin bir bölümünü ateşe verdi. Söndürmek için ateş renkli bir mermi ara.'),
   },
   spinTiltNotice: pick('The world can now spin on tilted axes, not just side to side.', 'Dünya artık sadece yatay değil, eğik eksenlerde de dönebiliyor.'),
   spinReverseNotice: pick('The world may now reverse direction as it spins.', 'Dünya artık dönerken yön değiştirebiliyor.'),
