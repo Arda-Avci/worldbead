@@ -24,39 +24,50 @@ function generateProceduralBandsTexture(width = 512, height = 256): THREE.Canvas
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d')!;
+  // Alternating pale zones / dark rust-brown belts (strong contrast between neighbors,
+  // matching the real planet and the bead-painting side's `generateJupiterBands`) rather
+  // than a run of similar creams/tans, which read as nearly monochrome (owner feedback).
   const bandColors: [number, number, number][] = [
-    [0xd8, 0xb3, 0x83],
-    [0xc9, 0x9a, 0x66],
-    [0xe6, 0xcf, 0xa8],
-    [0xb0, 0x7a, 0x4c],
-    [0xe8, 0xd9, 0xbc],
-    [0x9c, 0x66, 0x3f],
+    [0xed, 0xe0, 0xbe],
+    [0x8c, 0x4a, 0x24],
+    [0xf4, 0xea, 0xd2],
+    [0x5b, 0x2e, 0x15],
+    [0xe0, 0xc8, 0x8e],
+    [0xa8, 0x50, 0x1f],
+    [0xf0, 0xe0, 0xb8],
+    [0x3d, 0x20, 0x10],
   ];
   // Cheap deterministic hash noise (no shared noise util across module boundaries).
   const hash = (x: number, y: number): number => {
     const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
     return s - Math.floor(s);
   };
+  const smoothstep = (edge0: number, edge1: number, x: number): number => {
+    const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+    return t * t * (3 - 2 * t);
+  };
   const img = ctx.createImageData(width, height);
   for (let y = 0; y < height; y++) {
     const lat = 1 - (y / (height - 1)) * 2;
-    const bandF = (lat * 9 + 9) % bandColors.length;
-    const bandLo = bandColors[Math.floor(bandF) % bandColors.length];
-    const bandHi = bandColors[(Math.floor(bandF) + 1) % bandColors.length];
-    const bandT = bandF - Math.floor(bandF);
     for (let x = 0; x < width; x++) {
+      // Warp which band a latitude falls into, so edges are wavy/turbulent, not clean stripes.
+      const edgeWarp = hash(x * 0.015, y * 0.05) * 0.5 + hash(x * 0.05, y * 0.02) * 0.5 - 0.5;
+      const bandF = (((lat + edgeWarp * 0.35) * 9 + 9) % bandColors.length + bandColors.length) % bandColors.length;
+      const bandLo = bandColors[Math.floor(bandF) % bandColors.length];
+      const bandHi = bandColors[(Math.floor(bandF) + 1) % bandColors.length];
+      const bandT = smoothstep(0.32, 0.68, bandF - Math.floor(bandF));
       const n = hash(x * 0.06, y * 0.18) * 0.5 + hash(x * 0.02, y * 0.4) * 0.5;
       let r = bandLo[0] + (bandHi[0] - bandLo[0]) * bandT;
       let g = bandLo[1] + (bandHi[1] - bandLo[1]) * bandT;
       let b = bandLo[2] + (bandHi[2] - bandLo[2]) * bandT;
-      const shade = 1 + (n - 0.5) * 0.22;
+      const shade = 1 + (n - 0.5) * 0.26;
       r *= shade; g *= shade; b *= shade;
-      const spotDist = Math.hypot(((x / width) * Math.PI * 2 - 4.2) * 1.6, (lat + 0.28) * 3.2);
-      if (spotDist < 0.55) {
-        const t = 1 - spotDist / 0.55;
+      const spotDist = Math.hypot(((x / width) * Math.PI * 2 - 4.2) * 1.5, (lat + 0.28) * 2.8);
+      if (spotDist < 0.62) {
+        const t = smoothstep(0.62, 0, spotDist);
         r = r * (1 - t) + 0xc1 * t;
-        g = g * (1 - t) + 0x5a * t;
-        b = b * (1 - t) + 0x3c * t;
+        g = g * (1 - t) + 0x53 * t;
+        b = b * (1 - t) + 0x38 * t;
       }
       const o = (y * width + x) * 4;
       img.data[o] = Math.max(0, Math.min(255, Math.round(r)));

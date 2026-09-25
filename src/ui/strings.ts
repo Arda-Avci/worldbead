@@ -47,7 +47,7 @@ export const POWER_NAMES: Record<PowerId, string> = {
 
 export const S = {
   // ---------------------------------------------------------------- HUD
-  level: (n: number) => pick(`Level ${n}`, `Bölüm ${n}`),
+  level: (n: number) => pick(`Level ${n}`, `Seviye ${n}`),
   loading: (planet: string) => pick(`Loading ${planet}`, `${planet} yükleniyor`),
   settingsAria: pick('Settings', 'Ayarlar'),
   currentProbeAria: pick('Current probe', 'Aktif mermi'),
@@ -64,12 +64,12 @@ export const S = {
   megaPop: (n: number) => pick(`MEGA POP ×${n}`, `MEGA POP ×${n}`),
 
   // ------------------------------------------------------ level complete
-  levelComplete: pick('Level Complete', 'Bölüm Tamamlandı'),
+  levelComplete: pick('Level Complete', 'Seviye Tamamlandı'),
   planetComplete: pick('Planet Complete', 'Gezegen Tamamlandı'),
   didYouKnow: pick('Did you know?', 'Biliyor muydunuz?'),
   nextStop: (planet: string) => pick(`Next stop: `, `Sıradaki durak: `) + planet,
   continueLabel: pick('Continue', 'Devam Et'),
-  nextLevel: pick('Next Level', 'Sonraki Bölüm'),
+  nextLevel: pick('Next Level', 'Sonraki Seviye'),
 
   // -------------------------------------------------------- level failed
   outOfProbes: pick('Out of Probes', 'Mermi Kalmadı'),

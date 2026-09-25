@@ -503,3 +503,97 @@ no cloud drift despite being well past `CLOUD_DRIFT_LEVEL` — only Earth
   states like the two-button level-failed card) is not part of the
   production bundle — `demo.html` is created temporarily and deleted after
   use, never left in the tree, since no build entry references it.
+
+## Bead-size bug fix, Jupiter banding, terminology, tutorial-dim readability
+## (owner review round)
+
+- **Bead size — real bug found and fixed**: bead radius used to be
+  `spacing(beadCount) * shellRadiusScale * factor`, and `beadCount` for
+  extra outer layers was `surfaceBeadCount * 0.45^depth` — *fewer* beads
+  per layer the farther out, which made outer/coarser layers' beads
+  visibly **bigger** than an earlier level's single, finer surface layer
+  (e.g. level 55's outer layer was bigger than level 2's only layer) —
+  the exact opposite of "beads shrink as levels rise." Root cause: bead
+  count was chosen top-down from a per-planet `beadRange` and a coarseness
+  *fraction*, with radius as an incidental side effect, rather than radius
+  being the thing actually designed. Fixed by inverting the relationship in
+  `src/game/levels.ts`: `surfaceBeadRadius(sizeProgress)` and
+  `layerBeadRadius(sizeProgress, depthFromSurface)` are now the source of
+  truth — two small, purely-numeric, monotonically-decreasing-in-level
+  curves (`BEAD_RADIUS_MAX = 0.072` down to `BEAD_RADIUS_MIN = 0.03`,
+  saturating by `BEAD_SIZE_SATURATION_LEVEL = 700`), with outer layers only
+  ever `BEAD_RADIUS_COARSE_PER_DEPTH = 12%` bigger than the layer just
+  inside them at the *same* level, and hard-clamped to never exceed
+  `BEAD_RADIUS_MAX` (level 1's own radius) — so no bead, on any layer, at
+  any level, can ever be bigger than level 1's. `beadCountForRadius()`
+  inverts `BeadGlobe.ts`'s actual `makeShell` formula (`RADIUS_STEP = 0.03`,
+  `factor = 0.56`, duplicated as commented constants in `levels.ts` rather
+  than cross-imported, matching this codebase's existing module-isolation
+  convention) to get the bead count that formula needs to hit each target
+  radius. `BEAD_RADIUS_MIN`/`BEAD_SIZE_SATURATION_LEVEL` were chosen so a
+  maxed-out level (4 layers, fully saturated) totals ~14k beads and *never
+  needs to grow bead size back up* to stay under that budget — satisfying
+  the owner's stated priority ("cap total beads for mobile and reduce layer
+  count before you ever increase bead size") by construction, since layer
+  count is separately hard-capped at 4 by `LAYER_MILESTONES`. Per-planet
+  `beadRange` was removed entirely from `CURVES` — bead size is now 100%
+  global/planet-independent, which also directly serves the "Earth must
+  look more detailed on every revisit" requirement, since every planet
+  (including every Earth revisit) draws from the exact same level→radius
+  curve. Also revised outer-layer K: was `max(2, k - depth - 1)` (crushed
+  outer layers toward near-monochrome, e.g. K=2 at level 55's outer layer —
+  itself a big part of why it read as "less detailed than level 2"); now
+  `max(3, k - depth)`, never below 3 distinct colors on any layer.
+- **Jupiter banding — real bug found and fixed**: the original procedural
+  palette (`generateJupiterBands` in `game/texture.ts`, and its render-side
+  duplicate `generateProceduralBandsTexture` in `render/planetBody.ts`)
+  used six similar cream/tan/brown hues blended with a perfectly smooth
+  latitude gradient — visually weak, and after k-means quantization it
+  read as nearly one flat beige color. Replaced with an 8-band palette that
+  strictly *alternates* pale cream/white "zones" and dark rust-brown/near-
+  black "belts" (real Jupiter's actual pattern), added an `fbm3`-driven (own
+  hash-noise on the render side, per the module-isolation rule) warp to the
+  band-selection latitude so edges are wavy/turbulent instead of clean
+  stripes, switched the band blend from linear to a narrow `smoothstep` so
+  each band reads as its own solid color class over most of its width, and
+  enlarged/reddened the Great Red Spot. Both implementations were updated
+  in lockstep (still two independent files, per the existing contract).
+- **Terminology consistency**: `strings.ts`'s Turkish `level`/
+  `levelComplete`/`nextLevel` used "Bölüm" (chapter) while `nextPlanetIn`
+  already used "seviye" (level) — inconsistent on the same HUD. All now use
+  "Seviye" consistently in Turkish (English unaffected, already "Level").
+- **Tutorial-dim readability**: the tutorial overlay's dim rect
+  (`.wb-tutorial-dim`, `z-index: 50`, covering the full viewport) sat above
+  the HUD's topbar and probe dock, which have no `z-index` of their own —
+  so the current-probe orb (correctly tinted to the queued color the whole
+  time — confirmed via a live DOM check, `--c` was always set correctly)
+  visually read as dark/grey simply because it was being dimmed along with
+  the globe behind it. Fixed by giving `.wb-topbar` and `.wb-dock` a
+  `z-index: 55` (above the tutorial layer) so HUD chrome always renders at
+  full brightness/true color regardless of an active tutorial spotlight.
+  Separately softened `.wb-tutorial-dim` from `rgba(3,5,12,0.72)` to `0.5`
+  so the lit globe outside the spotlight circle reads as a dim planet
+  rather than a flat near-black disc, while still drawing the eye to the
+  spotlighted target.
+- Per-level checkpoint table (post owner-review fixes), radius in
+  globe-normalized units (`beadRadius` as actually rendered by
+  `BeadGlobe.ts`), layers ordered outermost-first:
+
+| Level | Planet (visit) | Layers | Layer radii (outer→inner) | Layer K (outer→inner) |
+|---|---|---|---|---|
+| 1 | Earth (0) | 1 | 0.0720 | 3 |
+| 10 | Earth (0) | 1 | 0.0682 | 3 |
+| 20 | Moon (0) | 1 | 0.0662 | 4 |
+| 50 | Jupiter (0) | 2 | 0.0697, 0.0622 | 3, 4 |
+| 51 | Earth (1) | 2 | 0.0696, 0.0622 | 3, 4 |
+| 60 | Earth (1) | 2 | 0.0686, 0.0612 | 3, 4 |
+| 101 | Earth (2) | 2 | 0.0645, 0.0576 | 4, 5 |
+| 110 | Earth (2) | 2 | 0.0637, 0.0569 | 4, 5 |
+| 151 | Earth (3) | 3 | 0.0669, 0.0605, 0.0540 | 4, 5, 6 |
+| 200 | Jupiter (3) | 3 | 0.0632, 0.0571, 0.0510 | 4, 5, 6 |
+| 349 | Jupiter (6) | 4 | 0.0590, 0.0538, 0.0486, 0.0434 | 5, 6, 7, 8 |
+
+Every column of radii is strictly decreasing top-to-bottom (monotonic
+shrink with level) and strictly decreasing left-to-right within a row
+(coarser outside, finer inside, same level) — verified by direct
+computation from `getLevel()`, not eyeballed from screenshots.

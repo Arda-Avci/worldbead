@@ -19,18 +19,23 @@ export const SLOT_LENGTH = 10;
 /** Total playable levels (20 full cycles of the 5-planet rotation). */
 export const MAX_LEVEL = CYCLE.length * SLOT_LENGTH * 20;
 
-/** Per-planet bead-count range and whether it ever grows a cloud shell — the only things that still vary by planet. */
-interface PlanetCurve {
-  beadRange: [number, number];
-  cloud: 'none' | 'earth' | 'always';
-}
-
-const CURVES: Record<PlanetId, PlanetCurve> = {
-  earth: { beadRange: [800, 7000], cloud: 'earth' },
-  moon: { beadRange: [1200, 5500], cloud: 'none' },
-  venus: { beadRange: [1400, 6000], cloud: 'always' },
-  mars: { beadRange: [1500, 6500], cloud: 'none' },
-  jupiter: { beadRange: [1600, 7000], cloud: 'none' },
+/**
+ * Whether each planet ever grows a cloud shell — the only thing that still
+ * varies by planet. Bead *count* (and therefore bead *size*) used to also
+ * vary per planet via a per-planet range, which was the root cause of a bug
+ * (owner-reported): a planet with a lower bead-count ceiling could show
+ * visibly bigger beads than an earlier, more advanced level on a different
+ * planet. Bead size is now derived purely from the global level number and
+ * layer depth (see `surfaceBeadRadius`/`layerBeadRadius` below), identically
+ * for every planet, so two levels at the same overall progress always show
+ * the same bead size regardless of which planet they're on.
+ */
+const CURVES: Record<PlanetId, { cloud: 'none' | 'earth' | 'always' }> = {
+  earth: { cloud: 'earth' },
+  moon: { cloud: 'none' },
+  venus: { cloud: 'always' },
+  mars: { cloud: 'none' },
+  jupiter: { cloud: 'none' },
 };
 
 /** One extra coarse bead layer sitting outside the (innermost) `surface` shell — item #13. */
@@ -93,6 +98,55 @@ function globalK(progress: number): number {
 }
 
 /**
+ * Bead *size* model (owner bug fix): every layer's bead radius is derived
+ * purely from the global level number and its depth from the surface, and
+ * is GUARANTEED to never exceed `BEAD_RADIUS_MAX` (level 1's own radius) —
+ * so no later level, and no outer/coarser layer introduced at a later
+ * level, can ever show a bigger bead than an earlier level did. Radius
+ * shrinks monotonically with level at every fixed depth, and outer layers
+ * are only ever *modestly* bigger than the layer just inside them at the
+ * same level (coarser color-wise via a lower K, not dramatically bigger
+ * bead-wise). `BEAD_RADIUS_STEP`/`BEAD_RADIUS_FACTOR` mirror the constants
+ * `BeadGlobe.ts`'s `makeShell` actually renders with (`RADIUS_STEP` and the
+ * non-cloud 0.56 factor) — kept as a duplicated, commented pair rather than
+ * a cross-import, per this codebase's convention of not importing between
+ * modules that shouldn't depend on each other's internals.
+ */
+const BEAD_RADIUS_STEP = 0.03; // must match BeadGlobe.ts makeShell's extra-layer geometric radius step
+const BEAD_RADIUS_FACTOR = 0.56; // must match BeadGlobe.ts makeShell's non-cloud bead-radius factor
+/** Level 1's bead radius — the hard ceiling no bead, on any layer or level, may ever exceed. */
+const BEAD_RADIUS_MAX = 0.072;
+/**
+ * The finest (innermost, most-advanced) bead radius the curve ever reaches.
+ * Chosen so that a maxed-out level (4 layers, fully saturated) still totals
+ * well under a mobile-safe bead budget (~14k instanced beads) WITHOUT ever
+ * needing to grow bead size back up to stay under budget — the owner's
+ * explicit priority order ("reduce layer count before you ever increase
+ * bead size") is satisfied by construction: layer count is separately
+ * capped at 4 by `LAYER_MILESTONES`, and this floor is picked low enough
+ * that the two caps together never require a corrective size increase.
+ */
+const BEAD_RADIUS_MIN = 0.03;
+/** Each layer step outward is this much bigger (radius-wise) than the layer just inside it, at the same level. */
+const BEAD_RADIUS_COARSE_PER_DEPTH = 0.12;
+/** The bead-size shrink curve is fully saturated by this level; later levels keep the same (minimum) bead size rather than continuing to shrink or ever growing back. */
+const BEAD_SIZE_SATURATION_LEVEL = 700;
+
+/** Innermost (`surface`, depth 0) bead radius at a given level, decreasing monotonically to `BEAD_RADIUS_MIN`. */
+function surfaceBeadRadius(sizeProgress: number): number {
+  return BEAD_RADIUS_MAX - (BEAD_RADIUS_MAX - BEAD_RADIUS_MIN) * Math.pow(sizeProgress, 0.55);
+}
+/** Bead radius for a layer `depthFromSurface` steps outside the surface (0 = surface itself), same level. */
+function layerBeadRadius(sizeProgress: number, depthFromSurface: number): number {
+  return Math.min(BEAD_RADIUS_MAX, surfaceBeadRadius(sizeProgress) * (1 + BEAD_RADIUS_COARSE_PER_DEPTH * depthFromSurface));
+}
+/** Inverts `BeadGlobe.ts`'s `beadRadius = spacing(designCount) * shellScale * factor` to find the bead count a target radius needs. */
+function beadCountForRadius(radius: number, depthFromSurface: number): number {
+  const shellScale = 1 + BEAD_RADIUS_STEP * depthFromSurface;
+  return Math.max(60, Math.round(4 * Math.PI * ((shellScale * BEAD_RADIUS_FACTOR) / radius) ** 2));
+}
+
+/**
  * Onboarding milestones (item #18a): every new mechanic first appears on its
  * own level, spaced apart from every other mechanic's introduction and from
  * a planet-change level (every `SLOT_LENGTH`th level + 1), so the player is
@@ -135,8 +189,10 @@ export function getLevel(level: number): LevelConfig {
 
   const progress = (lv - 1) / (MAX_LEVEL - 1);
   const curve = CURVES[planet];
-  const [b0, b1] = curve.beadRange;
-  const beadCount = Math.round(b0 + (b1 - b0) * Math.pow(progress, 0.85));
+
+  // Bead size: a single global, planet-independent curve (see the block above `getLevel`).
+  const sizeProgress = Math.min(1, (lv - 1) / (BEAD_SIZE_SATURATION_LEVEL - 1));
+  const beadCount = beadCountForRadius(surfaceBeadRadius(sizeProgress), 0);
 
   const k = globalK(progress);
 
@@ -151,10 +207,12 @@ export function getLevel(level: number): LevelConfig {
   for (let d = 0; d < numExtra; d++) {
     // d=0 is outermost/coarsest; distFromSurface counts inward from there (1 = just outside `surface`).
     const distFromSurface = numExtra - d;
-    const fraction = Math.pow(0.45, distFromSurface);
+    const radius = layerBeadRadius(sizeProgress, distFromSurface);
     extraLayers.push({
-      beadCount: Math.max(60, Math.round(beadCount * fraction)),
-      k: Math.max(2, k - distFromSurface - 1),
+      beadCount: beadCountForRadius(radius, distFromSurface),
+      // Coarser than the surface (fewer colors), but never crushed toward monochrome: at most
+      // `distFromSurface` fewer than the surface's own K, floored at 3 distinct colors.
+      k: Math.max(3, k - distFromSurface),
     });
   }
 

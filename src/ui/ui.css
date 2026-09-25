@@ -87,6 +87,8 @@
   justify-content: space-between;
   gap: 10px;
   pointer-events: none;
+  /* Above the tutorial dim overlay — see .wb-dock. */
+  z-index: 55;
 }
 
 .wb-stardust-pill {
@@ -170,6 +172,10 @@
   align-items: flex-end;
   gap: 14px;
   pointer-events: none;
+  /* Above the tutorial dim overlay (z-index 50): the probe dock is chrome,
+     not part of the spotlighted scene, so it must always read at full
+     brightness/true color even while a tutorial dims the globe behind it. */
+  z-index: 55;
 }
 
 .wb-orb {
@@ -762,7 +768,9 @@
   height: 100%;
   pointer-events: none;
 }
-.wb-tutorial-dim { fill: rgba(3, 5, 12, 0.72); }
+/* Dimmed enough to draw the eye to the spotlight, but not so heavy that the
+   lit globe outside it reads as a flat near-black disc (owner feedback). */
+.wb-tutorial-dim { fill: rgba(3, 5, 12, 0.5); }
 .wb-tutorial-ring {
   /* Always-visible base ring around the spotlight, so the target's outline
      never disappears — only the echo (below) pulses outward from it. */
