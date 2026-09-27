@@ -1995,3 +1995,169 @@ like a hung test otherwise.
 single fallback point; new dev-only QA hooks `exposedColorsHex`,
 `regionsOfColorAnywhere`, `grazingHitTestAllShells`). `levels.ts` and all
 other files are unchanged.
+
+## Color-separation floors raised again + innermost-shell ground convergence
+## (completing a previous session's verification)
+
+A previous session raised `readablePalette()`'s separation floors
+(`MIN_DELTA_E` 20→27, `MAX_SHIFT_FROM_ORIGINAL` 10→16, `MIN_LAYER_DELTA_E`
+16→21) and added a level-dependent effect where the innermost `surface`
+shell's own legibility push scales down toward near-zero as level rises
+(`groundConvergenceForLevel()`, saturating at level 100), so a high-level
+`surface` shell reads closer to the raw ground-sampled texture than the
+normal fully-legible palette every other shell/level still uses — but left
+the verification of that work incomplete. This session finished the
+verification and fixed one real bug it surfaced.
+
+**Final constants** (`src/game/BeadGlobe.ts`): `MIN_DELTA_E = 27`,
+`MAX_SHIFT_FROM_ORIGINAL = 16`, `MIN_LAYER_DELTA_E = 21`, plus the
+convergence floors `GROUND_MIN_SHIFT = 2`, `GROUND_MIN_DELTA_E = 8`,
+`GROUND_MIN_LAYER_DELTA_E = 5`, `GROUND_CONVERGENCE_SATURATION_LEVEL =
+100`. **Why**: the higher floors give the pairwise-separation pass real
+room to work (owner round 2's complaint was that 20/10 still blended); the
+non-zero ground floors keep even a level-150 `surface` shell's classes
+tap-distinguishable, per the owner's explicit "never fully identical" rule,
+while the `driftScale = 1 - groundConvergence` parameter lets that one
+shell's own palette sit much closer to its raw k-means centroids than the
+normal 27/16 pair would allow.
+
+**Real bug found and fixed while verifying item 3 (ground convergence)**:
+`readablePalette()`'s `MIN_L`/`MAX_L`/`MIN_CHROMA` legibility band (lines
+clamping every color into `[28, 90]` lightness and ≥16 chroma) was applied
+**unconditionally**, never scaled by `driftScale` — so even at full ground
+convergence (`driftScale = 0`, level ≥ 100) a genuinely dark or
+low-chroma raw centroid (Jupiter's near-black polar belt, `0x3D2010`, or
+any planet's darkest shadow tone) was still forced up to at least L≈28,
+which is exactly why the innermost shell never actually looked like the
+real texture at high level — confirmed by screenshot: level 100's exposed
+`surface` shell read as a narrow pale cream/tan range with no dark tones at
+all (`scratchpad debug100_pole0/1.png`, `debug100_rot1/3.png`), even though
+Mars at the same convergence (level 80) showed excellent dark/light
+contrast. **Fix**: added `GROUND_MIN_L_FLOOR = 6`, `GROUND_MAX_L_CEIL = 96`,
+`GROUND_MIN_CHROMA_FLOOR = 2` and interpolated the band itself by
+`driftScale` (`effMinL`/`effMaxL`/`effMinChroma`), the same way
+`maxShift`/`minDeltaEFloor` already did — so a level-100+ `surface` shell's
+band clamp relaxes almost to nothing, not just its separation/shift budget.
+Verified via a temporary QA-only `colorHistogram(kind)` hook (added to
+`Game.ts`'s `window.__wbQA`, same dev-only pattern as every other QA hook,
+confirmed stripped from `dist/` with the rest — `grep -c __wbQA
+dist/assets/*.js` returns 0): level 100's `surface` palette is
+`#995229:396, #f1e3c3:286, #4f2a15:362, #dbc291:141` — `#4f2a15` (a real
+dark chocolate-brown, L≈20) is ~30% of the shell and would have been
+impossible to reach before this fix. This is a data-level fix, not a
+rendering one — see the honest caveat below about what the *screenshot*
+still shows.
+
+**Also fixed the QA hook needed to do this verification at all**:
+`window.__wbQA.forceKillOuterLayer()` used `shells.find(s => s.kind ===
+'layer')` — always the *first* `layer`-kind shell regardless of whether it
+was already dead — so calling it repeatedly on a level with more than one
+extra layer (levels 80/95/100/150 in this session's checkpoint set all have
+2) never progressed past the outermost layer and could never reach
+`surface`. Fixed to find the first still-*alive* `layer` shell
+(`s.kind === 'layer' && s.alive.some((a) => a)`), so N calls now correctly
+peel through N extra layers. Dev-only, stripped from `dist/` like every
+other `__wbQA` entry.
+
+### Verification evidence (headless Chromium, `/opt/pw-browsers`, `--disable-gpu`, scratchpad `verify.mjs`/`verify2.mjs`/`debug100*.mjs`/`histogram.mjs`, screenshots in `scratchpad/fb5/shots2/`, never committed)
+
+1. **Distinct colors at level 95 and 150 (Jupiter, 3 layers)** — PASS.
+   `item1_level95_full.png`/`item1_level150_full.png` (the outer,
+   not-yet-popped layer, full `MIN_DELTA_E=27` floor applies) show 3-4
+   clearly separate cream/white/tan/mauve-grey bands with no visible
+   blending; no console errors, no page errors. Console:
+   `level 95 palette minDeltaE (surface+layers): 13.5, groundConvergence:
+   0.95` and `level 150 ...: 11.4, groundConvergence: 1.00`. **Caveat worth
+   flagging**: that printed number is `Math.min()` across *every* shell
+   including the not-yet-exposed `surface` shell, whose floor is
+   deliberately relaxed by design — so it reads much lower than the 27
+   floor the player actually sees on the currently-exposed outer layer.
+   This is a reporting nuance (two different shells' floors folded into one
+   number), not a bug; a future session touching this log line should
+   consider splitting it per-shell if it becomes confusing.
+2. **Venus level 85 second angle/log — still incomplete, honestly flagged.**
+   First angle/screenshot succeeds every time (`item2_venus85_a.png`,
+   console: `groundConvergence: 0.85, surfaceRawPalette:
+   d88933,fbda85,a14c18,eaae49,c46922` — a legitimate warm cream/ochre/rust
+   spread). The second drag+screenshot hung again this session (30s
+   timeout on `page.screenshot`, same symptom as the previous session's
+   note) — not retried further per the instruction to skip rather than
+   grind on it. Root cause is very likely the same documented
+   SwiftShader/headless slowness at high bead counts (see "Known
+   limitations"/"Open items" above), not a gameplay bug.
+3. **Innermost-shell-vs-ground-texture comparison at levels 20/50/80/100/150** —
+   PASS with one honest caveat. Used `forceKillOuterLayer()` (fixed above,
+   called once per extra layer) to expose `surface`, then screenshotted:
+   - **Level 20 (Moon, 0 extra layers)**: `surface` is already the only
+     body shell, correctly grey throughout, matching `moon.jpg`'s tone (no
+     before/after difference — nothing to converge, moon has no clouds and
+     stays visually the same shape).
+   - **Level 50 (Jupiter, groundConvergence 0.50)**: `surface` palette
+     `d3b788,9c582f,f0e2c2,512c17` — visible tan/cream/mauve bands,
+     moderate contrast (`item3_level50_surface.png`).
+   - **Level 80 (Mars, groundConvergence 0.80)**: `surface` palette
+     `ee956e,b1563b,d6653f,5c3831,8a4938` — screenshot
+     (`debug80_surface.png`, partly covered by the level-80 invasion
+     tutorial card, which is unrelated) shows the visible half in clearly
+     dark rust-red/brown against lighter tan, closely matching the real
+     `mars.jpg` texture's basalt-patch-over-rust-orange look
+     (`ground_mars_full.png`).
+   - **Level 100 (Jupiter, groundConvergence 1.00, saturated)**: `surface`
+     palette `995229,f1e3c3,4f2a15,dbc291` (histogram: 396/286/362/141
+     beads) — genuinely close to the real procedural Jupiter texture's belt
+     tones (`ground_jupiter_full.png`, rendered from the actual
+     `generateJupiterBands()` the game uses, since Jupiter has no bundled
+     texture file), including a real dark-chocolate class that was
+     impossible before this session's `MIN_L` fix. **But** the on-screen
+     screenshots at this level/camera framing (`debug100_pole0/1.png`,
+     `debug100_rot1/3.png`) read almost entirely pale cream/mauve — pixel
+     sampling confirmed the *rendered* image's darkest sampled pixel was
+     only RGB(92,84,88), nowhere near the palette's actual `#4f2a15`
+     (RGB(79,42,21)). This is a **rendering/lighting/bloom effect, not a
+     palette-data problem** — confirmed by contrast: Mars at the same
+     convergence (level 80, above) renders with excellent, obviously
+     correct dark/light contrast under the same shared lighting/bloom
+     pipeline, and the Moon (level 20) also reads correctly grey. Jupiter's
+     unusually pale, large-area cream/near-white classes likely push the
+     shared `UnrealBloomPass` (Jupiter has no per-planet bloom override,
+     unlike Venus's `BLOOM_STRENGTH_BY_PLANET` entry — see the "Venus was
+     unplayable" section above) into washing the whole frame. **Left
+     unfixed**: this is a `SpaceScene`/bloom concern, not a `BeadGlobe.ts`
+     color-logic bug, and out of this session's authorized scope (constants
+     in `BeadGlobe.ts` only) — flagged as an open item below instead of
+     scope-creeping into render-pipeline tuning nobody asked for this
+     round.
+   - **Level 150 (Jupiter, groundConvergence 1.00)**: `surface` palette
+     `d9bf8d,af8058,f3e7c8,4f2a15,985027` — this run's camera framing
+     happened to catch the darker mauve/tan bands
+     (`item3_level150_surface.png` shows clearly visible multi-tone
+     banding, better contrast than level 100's screenshot at a different
+     auto-spin phase), which is consistent with the same underlying data
+     bug/fix above rather than a level-100-vs-150 regression — Jupiter's
+     auto-spin means two different runs land on different visible
+     longitudes/latitudes of the same band pattern.
+   Net: the ground-convergence **data** (the actual palette hex values
+   `paintFromTexture`/`readablePalette` produce for `surface`) is verified
+   correct and tightening toward the real texture as level rises, on every
+   planet checked. The **visual** confirmation is solid for Mars and the
+   Moon; for Jupiter specifically it's camera/bloom-dependent rather than
+   reliably visible at every rotation, which is an honest, separate
+   limitation from the color-logic fix this session made.
+4. **Sanity check on requirement 1 (not visibly broken by these changes)** —
+   PASS. Eyeballed `item1_level95_full.png`, `item1_level150_full.png`, and
+   `debug80_surface.png`: every one shows unambiguously distinct classes
+   both within a shell and against the shell below it, no blending, no
+   regression from the higher floors.
+
+### Files touched this session
+
+`src/game/BeadGlobe.ts` (the `MIN_L`/`MAX_L`/`MIN_CHROMA` band-vs-`driftScale`
+fix inside `readablePalette()`, plus a `surfaceRawPalette` addition to the
+existing dev-only console.debug line for future debugging — everything
+else in this file was the previous session's uncommitted work, left as
+verified-correct), `src/game/Game.ts` (fixed `forceKillOuterLayer()` to
+advance past a dead outer layer instead of re-targeting it forever; new
+dev-only `colorHistogram(kind)` QA hook). `npm run build` passes
+(`tsc --noEmit && vite build`, same pre-existing "chunk larger than 500kB"
+notice as always); `grep -c __wbQA dist/assets/*.js` confirms 0 — every
+dev-only addition is stripped from the production bundle.

@@ -252,9 +252,24 @@ export class Game {
         // QA-only: instantly clears the outermost body shell (bypassing normal shot-by-shot
         // play) so a real layer transition — and the `updateHud()` toast it triggers — can be
         // observed without grinding through hundreds of real shots in an automated test.
+        colorHistogram: (kind: string) => {
+          if (!this.globe) return null;
+          const shell = this.globe.shells.find((s) => s.kind === kind);
+          if (!shell) return null;
+          const counts: Record<string, number> = {};
+          for (let i = 0; i < shell.count; i++) {
+            const hex = '#' + shell.palette[shell.colorIdx[i]].toString(16).padStart(6, '0');
+            counts[hex] = (counts[hex] ?? 0) + 1;
+          }
+          return counts;
+        },
         forceKillOuterLayer: () => {
           if (!this.globe) return null;
-          const outer = this.globe.shells.find((s) => s.kind === 'layer');
+          // Find the outermost STILL-ALIVE `layer` shell (not just the first `layer`-kind
+          // shell) so repeated calls actually progress inward through every extra layer down
+          // to `surface` on levels with more than one — a level with, say, 2 extra layers
+          // needs this called twice to reach `surface`.
+          const outer = this.globe.shells.find((s) => s.kind === 'layer' && s.alive.some((a) => a));
           if (!outer) return null;
           outer.alive.fill(0);
           this.updateHud();

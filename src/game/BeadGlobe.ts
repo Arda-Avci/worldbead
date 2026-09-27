@@ -224,7 +224,18 @@ interface ReadablePaletteResult {
   minDeltaE: number;
 }
 
-function readablePalette(paletteHex: number[]): ReadablePaletteResult {
+/**
+ * `driftScale` (1 = full legibility push, as used by every shell except the
+ * innermost at high level) scales `MAX_SHIFT_FROM_ORIGINAL`/`MIN_DELTA_E`
+ * down toward small non-zero floors as it approaches 0 — see
+ * `groundConvergenceForLevel()`: the owner's "innermost layer should
+ * converge on the real planet surface by level 100+" request needs the
+ * *same* function to allow much less drift for just that one shell, without
+ * duplicating the whole pass. The floors are never 0 — the owner was
+ * explicit that classes must stay tap-distinguishable, never fully
+ * identical, even on the innermost shell.
+ */
+function readablePalette(paletteHex: number[], driftScale = 1): ReadablePaletteResult {
   // Kept close to the raw k-means centroid: readability must come from
   // lighting/gloss, not from exaggerating colors away from the real
   // texture's tones — the owner's standing rule is that a bead's color must
@@ -240,11 +251,38 @@ function readablePalette(paletteHex: number[]): ReadablePaletteResult {
   // shoved further apart. `MIN_DELTA_E` is the floor for whatever classes
   // remain after merging, not a target every original centroid must reach on
   // its own.
+  // Owner round 2: "colors still blend together, make them more distinct" —
+  // raised from 20/10 (round 1's values) to 27/16 so the separation pass has
+  // real room to work; verified by screenshot across Earth/Mars/Venus/
+  // Jupiter/level 150 (see Memory_Bank.md) that this is still faithful to
+  // the ground texture (drift budget of 16 ΔE is a small, not dramatic, move
+  // for a k-means centroid) while reading as unambiguously distinct classes.
   const MIN_L = 28;
   const MAX_L = 90;
   const MIN_CHROMA = 16;
-  const MIN_DELTA_E = 20;
-  const MAX_SHIFT_FROM_ORIGINAL = 10;
+  const MIN_DELTA_E = 27;
+  const MAX_SHIFT_FROM_ORIGINAL = 16;
+  // Non-zero floors for `driftScale` -> 0 (innermost shell, level >= ~100):
+  // still separated enough to tap correctly, but far closer to raw ground
+  // truth than the normal 27/16 pair above.
+  const GROUND_MIN_SHIFT = 2;
+  const GROUND_MIN_DELTA_E = 8;
+  const maxShift = GROUND_MIN_SHIFT + (MAX_SHIFT_FROM_ORIGINAL - GROUND_MIN_SHIFT) * driftScale;
+  const minDeltaEFloor = GROUND_MIN_DELTA_E + (MIN_DELTA_E - GROUND_MIN_DELTA_E) * driftScale;
+  // Bug found during verification: the MIN_L/MAX_L/MIN_CHROMA legibility band below used to
+  // apply unconditionally, regardless of `driftScale` — so a genuinely dark or near-grey raw
+  // centroid (e.g. Jupiter's near-black polar belt, Mars's dark basalt) still got forced into
+  // [28,90] lightness / >=16 chroma even at full ground convergence, which is exactly why the
+  // innermost shell never actually looked like the real texture at level 100+ (screenshots
+  // stayed a narrow pale cream/tan range with no dark tones at all). Fix: scale the band itself
+  // toward near-unclamped floors/ceilings as `driftScale` -> 0, the same way `maxShift`/
+  // `minDeltaEFloor` already do.
+  const GROUND_MIN_L_FLOOR = 6;
+  const GROUND_MAX_L_CEIL = 96;
+  const GROUND_MIN_CHROMA_FLOOR = 2;
+  const effMinL = GROUND_MIN_L_FLOOR + (MIN_L - GROUND_MIN_L_FLOOR) * driftScale;
+  const effMaxL = GROUND_MAX_L_CEIL - (GROUND_MAX_L_CEIL - MAX_L) * driftScale;
+  const effMinChroma = GROUND_MIN_CHROMA_FLOOR + (MIN_CHROMA - GROUND_MIN_CHROMA_FLOOR) * driftScale;
 
   const originalLabs: [number, number, number][] = paletteHex.map((hex) => {
     const r = ((hex >> 16) & 255) / 255, g = ((hex >> 8) & 255) / 255, b = (hex & 255) / 255;
@@ -257,12 +295,12 @@ function readablePalette(paletteHex: number[]): ReadablePaletteResult {
     const [L, a, b] = labs[i];
     return Math.sqrt((L - oL) ** 2 + (a - oa) ** 2 + (b - ob) ** 2);
   };
-  // Clamps `labs[i]` back onto the sphere of radius `MAX_SHIFT_FROM_ORIGINAL` around its
+  // Clamps `labs[i]` back onto the sphere of radius `maxShift` around its
   // own original centroid whenever a push has moved it further than that.
   const clampToBudget = (i: number): void => {
     const d = distFromOriginal(i);
-    if (d <= MAX_SHIFT_FROM_ORIGINAL) return;
-    const t = MAX_SHIFT_FROM_ORIGINAL / d;
+    if (d <= maxShift) return;
+    const t = maxShift / d;
     const [oL, oa, ob] = originalLabs[i];
     labs[i][0] = oL + (labs[i][0] - oL) * t;
     labs[i][1] = oa + (labs[i][1] - oa) * t;
@@ -278,12 +316,12 @@ function readablePalette(paletteHex: number[]): ReadablePaletteResult {
   for (let i = 0; i < labs.length; i++) {
     const [L, a, b] = labs[i];
     let newL = L;
-    if (newL < MIN_L) newL = MIN_L + (newL / MIN_L) * 8;
-    if (newL > MAX_L) newL = MAX_L;
+    if (newL < effMinL) newL = effMinL + (newL / Math.max(effMinL, 1)) * 8 * driftScale;
+    if (newL > effMaxL) newL = effMaxL;
     labs[i][0] = newL;
     const chroma = Math.hypot(a, b);
-    if (chroma > 2 && chroma < MIN_CHROMA) {
-      const s = MIN_CHROMA / chroma;
+    if (chroma > 2 && chroma < effMinChroma) {
+      const s = effMinChroma / chroma;
       labs[i][1] = a * s;
       labs[i][2] = b * s;
     }
@@ -301,9 +339,9 @@ function readablePalette(paletteHex: number[]): ReadablePaletteResult {
       for (let j = i + 1; j < labs.length; j++) {
         const dL = labs[i][0] - labs[j][0], da = labs[i][1] - labs[j][1], db = labs[i][2] - labs[j][2];
         const dE = Math.sqrt(dL * dL + da * da + db * db);
-        if (dE < MIN_DELTA_E) {
+        if (dE < minDeltaEFloor) {
           const before = [labs[i][0], labs[j][0]];
-          const need = (MIN_DELTA_E - dE) / 2 + 0.5;
+          const need = (minDeltaEFloor - dE) / 2 + 0.5;
           if (labs[i][0] >= labs[j][0]) {
             shiftLightness(i, need);
             shiftLightness(j, -need);
@@ -333,7 +371,7 @@ function readablePalette(paletteHex: number[]): ReadablePaletteResult {
     for (let j = i + 1; j < labs.length; j++) {
       const dL = labs[i][0] - labs[j][0], da = labs[i][1] - labs[j][1], db = labs[i][2] - labs[j][2];
       const dE = Math.sqrt(dL * dL + da * da + db * db);
-      if (dE < MIN_DELTA_E) parent[find(j)] = find(i);
+      if (dE < minDeltaEFloor) parent[find(j)] = find(i);
     }
   }
   let minDeltaE = Infinity;
@@ -361,7 +399,7 @@ function readablePalette(paletteHex: number[]): ReadablePaletteResult {
 }
 
 /** Deterministic k-means over sampled RGB colors. */
-function kmeansQuantize(rgb: Float32Array, n: number, k: number, seed: number): { assign: Int16Array; palette: number[]; minDeltaE: number } {
+function kmeansQuantize(rgb: Float32Array, n: number, k: number, seed: number, driftScale = 1): { assign: Int16Array; palette: number[]; minDeltaE: number } {
   const kk = Math.max(1, Math.min(k, n));
   const rng = mulberry32(seed);
   const order = Array.from({ length: n }, (_, i) => i);
@@ -415,7 +453,7 @@ function kmeansQuantize(rgb: Float32Array, n: number, k: number, seed: number): 
     const b = Math.max(0, Math.min(255, Math.round(centroids[c * 3 + 2])));
     rawPalette.push((r << 16) | (g << 8) | b);
   }
-  const { palette, mergeMap, minDeltaE } = readablePalette(rawPalette);
+  const { palette, mergeMap, minDeltaE } = readablePalette(rawPalette, driftScale);
   const mergedAssign = new Int16Array(n);
   for (let i = 0; i < n; i++) mergedAssign[i] = mergeMap[assign[i]];
   return { assign: mergedAssign, palette, minDeltaE };
@@ -548,7 +586,7 @@ function enforceMinRegionSize(colorIdx: Int16Array, nbrStart: Int32Array, nbrLis
 }
 
 /** GDD §3 pipeline: sample -> k-means -> 2-pass majority smoothing -> merge down to the region target -> (below level 100) merge away any forbidden tiny region. */
-function paintFromTexture(dirs: Float32Array, img: ImageDataLike, k: number, regionTarget: number, seed: number, nbrStart: Int32Array, nbrList: Int32Array, level: number): { colorIdx: Int16Array; palette: number[]; minDeltaE: number } {
+function paintFromTexture(dirs: Float32Array, img: ImageDataLike, k: number, regionTarget: number, seed: number, nbrStart: Int32Array, nbrList: Int32Array, level: number, driftScale = 1): { colorIdx: Int16Array; palette: number[]; minDeltaE: number } {
   const n = dirs.length / 3;
   const rgb = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
@@ -556,7 +594,7 @@ function paintFromTexture(dirs: Float32Array, img: ImageDataLike, k: number, reg
     const [r, g, b] = sampleEquirect(img, lon, lat);
     rgb[i * 3] = r; rgb[i * 3 + 1] = g; rgb[i * 3 + 2] = b;
   }
-  const { assign, palette, minDeltaE } = kmeansQuantize(rgb, n, k, seed);
+  const { assign, palette, minDeltaE } = kmeansQuantize(rgb, n, k, seed, driftScale);
   const smoothed = majoritySmooth(assign, nbrStart, nbrList, palette.length, 2);
   mergeToRegionTarget(smoothed, nbrStart, nbrList, palette.length, regionTarget);
   enforceMinRegionSize(smoothed, nbrStart, nbrList, palette.length, level);
@@ -575,12 +613,43 @@ function paintFromTexture(dirs: Float32Array, img: ImageDataLike, k: number, reg
  * lands within `MIN_LAYER_DELTA_E` of it, every entry is pushed further
  * toward lighter until the two layers are clearly separable, reusing the
  * same ΔE-distance idea `readablePalette`'s separation pass uses.
+ *
+ * `groundConvergence` (0 = normal, 1 = full — see `groundConvergenceForLevel`)
+ * scales that inter-layer push down toward a small non-zero floor for the
+ * innermost shell at high level, so it isn't shoved away from its own raw
+ * ground-sampled tone just to stay separated from the layer directly outside
+ * it (`outerness` for that shell is already always 0, so this push is the
+ * only source of "readability drift" this function can still apply to it).
  */
-const MIN_LAYER_DELTA_E = 16;
+const MIN_LAYER_DELTA_E = 21;
+const GROUND_MIN_LAYER_DELTA_E = 5;
 
-function fadeOuterPalette(paletteHex: number[], outerness: number, prevAvgLab: [number, number, number] | null): { palette: number[]; avgLab: [number, number, number] } {
-  const FADE_LIGHTNESS = 24; // max lightness lift at outerness = 1
-  const FADE_CHROMA = 0.6; // max chroma reduction fraction at outerness = 1
+/**
+ * Owner request: "the innermost layer should progressively resemble the
+ * real planet surface, converging to a (near-)exact match by level 100+."
+ * Level-dependent (not layer-index-dependent — every level has exactly one
+ * deepest/innermost shell, `surface`), saturating at
+ * `GROUND_CONVERGENCE_SATURATION_LEVEL`. 0 = today's normal legibility
+ * push; 1 = minimal drift (still not zero — see `readablePalette`'s/
+ * `fadeOuterPalette`'s own ground floors, so classes stay tap-distinguishable).
+ * Applies only to the `surface` shell build below, never to `layer`/`clouds`
+ * shells, which keep the full item-1 distinctness behavior at every level.
+ */
+const GROUND_CONVERGENCE_SATURATION_LEVEL = 100;
+function groundConvergenceForLevel(level: number): number {
+  return Math.max(0, Math.min(1, level / GROUND_CONVERGENCE_SATURATION_LEVEL));
+}
+
+function fadeOuterPalette(paletteHex: number[], outerness: number, prevAvgLab: [number, number, number] | null, groundConvergence = 0): { palette: number[]; avgLab: [number, number, number] } {
+  // Owner round 2 ("colors still blend together"): lowered from 24/0.6 — at outerness = 1
+  // (the outermost extra layer, e.g. a 3-4 layer level's Layer 1) the old values pushed lightness
+  // and chroma so close to the ceiling that classes had almost no headroom left for the raised
+  // same-layer/inter-layer ΔE floors above to produce a visible difference — screenshotted at
+  // Jupiter level 95's outermost layer, it read as a near-uniform white ball. Lowering these two
+  // still reads as "visibly paler than the layer inside it" (the original item-2 ask) while
+  // leaving enough lightness/chroma room for the separation passes to actually show up.
+  const FADE_LIGHTNESS = 16; // max lightness lift at outerness = 1
+  const FADE_CHROMA = 0.4; // max chroma reduction fraction at outerness = 1
   const labs: [number, number, number][] = paletteHex.map((hex) => {
     const r = ((hex >> 16) & 255) / 255, g = ((hex >> 8) & 255) / 255, b = (hex & 255) / 255;
     return rgbToLab(r, g, b);
@@ -597,10 +666,11 @@ function fadeOuterPalette(paletteHex: number[], outerness: number, prevAvgLab: [
   const avg = (idx: 0 | 1 | 2) => labs.reduce((sum, l) => sum + l[idx], 0) / labs.length;
   let avgLab: [number, number, number] = [avg(0), avg(1), avg(2)];
   if (prevAvgLab) {
+    const layerFloor = GROUND_MIN_LAYER_DELTA_E + (MIN_LAYER_DELTA_E - GROUND_MIN_LAYER_DELTA_E) * (1 - groundConvergence);
     const dE = () => Math.hypot(avgLab[0] - prevAvgLab![0], avgLab[1] - prevAvgLab![1], avgLab[2] - prevAvgLab![2]);
     const d = dE();
-    if (d < MIN_LAYER_DELTA_E) {
-      const push = MIN_LAYER_DELTA_E - d + 1;
+    if (d < layerFloor) {
+      const push = layerFloor - d + 1;
       // Push AWAY from the previous (more outer) layer's own average lightness, in whichever
       // direction increases the gap — pushing blindly lighter can instead move a naturally-darker
       // inner layer's lightness *toward* a lighter outer neighbor and shrink the gap.
@@ -892,17 +962,20 @@ export class BeadGlobe implements GlobeAdapter {
     }
 
     // Surface: the innermost, most-detailed shell — the real planet, revealed once every layer above it is cleared.
+    // Owner: this shell alone should converge toward the raw ground-sampled texture as level
+    // rises, reaching (near-)zero readability drift by level 100 — see `groundConvergenceForLevel`.
+    const groundConvergence = groundConvergenceForLevel(cfg.level);
     const surfaceDirs = fibonacciSphere(cfg.beadCount);
     const surfaceSpacing = Math.sqrt((4 * Math.PI) / cfg.beadCount);
     const { start: sStart, list: sList } = buildNeighbors(surfaceDirs, surfaceSpacing * 1.45);
-    const { colorIdx: sColorIdx, palette: sRawPalette, minDeltaE: sMinDeltaE } = paintFromTexture(surfaceDirs, surfaceImg, cfg.k, regionShare(cfg.beadCount), cfg.seed, sStart, sList, cfg.level);
+    const { colorIdx: sColorIdx, palette: sRawPalette, minDeltaE: sMinDeltaE } = paintFromTexture(surfaceDirs, surfaceImg, cfg.k, regionShare(cfg.beadCount), cfg.seed, sStart, sList, cfg.level, 1 - groundConvergence);
     paletteMinDeltaEs.push(sMinDeltaE);
     if (import.meta.env.DEV) {
       // eslint-disable-next-line no-console
-      console.debug(`[BeadGlobe] level ${cfg.level} palette minDeltaE (surface+layers): ${Math.min(...paletteMinDeltaEs).toFixed(1)}`);
+      console.debug(`[BeadGlobe] level ${cfg.level} palette minDeltaE (surface+layers): ${Math.min(...paletteMinDeltaEs).toFixed(1)}, groundConvergence: ${groundConvergence.toFixed(2)}, surfaceRawPalette: ${sRawPalette.map((h) => h.toString(16)).join(',')}`);
     }
     // Surface is innermost (outerness 0): only the adjacent-layer separation check applies, no fade.
-    const { palette: sPalette } = fadeOuterPalette(sRawPalette, 0, prevLayerAvgLab);
+    const { palette: sPalette } = fadeOuterPalette(sRawPalette, 0, prevLayerAvgLab, groundConvergence);
     const surface = this.makeShell('surface', surfaceDirs, sStart, sList, sColorIdx, sPalette, 1.0, cfg.beadCount, cfg.seed);
     if (prevDirs) {
       surface.coveringShellIndex = prevShellIndex!;
