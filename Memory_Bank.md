@@ -1610,3 +1610,193 @@ stays responsive.
   rendered canvas — the geometric fix is the same either way, but a
   rendered-canvas regression pass would be the natural next check if the
   owner still reports misses after this.
+
+## Owner re-test of v1.0.20: both "fixed" items still broken — real root
+## causes found this session (previous session's fixes were real but
+## incomplete/insufficient)
+
+The owner tested the shipped build on his phone and both items 3 and 6 from
+the previous batch were still broken. This session re-investigated from
+scratch using a real running `vite dev` build driven by Playwright with
+genuine `page.mouse.click()`/`page.mouse.down/move/up()` events (phone
+viewport 390×844, dpr 3, `hasTouch`), not the previous session's isolated
+`resolveHit()`-only harness. New dev-only `__wbQA` hooks added for this:
+`targetsForCurrentProbe(n)` (finds up to `n` on-screen points for *disjoint*
+same-color regions, not just the largest one — needed to reproduce a
+rapid-double-tap race, since a single connected region dies as one unit and
+can't isolate it), `queueState()`, `regionsCount()`/`regionsPerShell()`. All
+are dev-only, stripped from production like the existing hooks (verified:
+`grep -c __wbQA dist/assets/*.js` → 0 after `npm run build`).
+
+### Item 3 re-investigated: real root cause was a queue-timing race, not the
+### geometric hit-test at all
+
+**The previous session's `resolveHit()` limb-snap fix is correct and still
+in place — that was never the whole bug.** Reproduced the actual "correct
+color, no hit" failure with real clicks: fired two real `page.mouse.click()`
+taps ~80-100ms apart at two different, disjoint, currently-exposed regions
+of the exact color the queue displayed at that moment (both target points
+independently verified via a `pickBead()` round-trip before clicking, so
+each was genuinely hittable and genuinely the displayed color). Before the
+fix: 2 real clicks on level 5 consumed **0** probes and popped **0** beads —
+not even registered as misses, i.e. exactly "I tapped the right color and
+nothing happened." Root cause: `Game.ts`'s tap handler used to call
+`this.session.fire(hit.shellId, hit.index)` only inside the fired probe's
+flight-animation `onArrive` callback, ~0.25s *after* the tap — but
+`GameSession.fire()` reads `this.queue[0]` **at call time**, not at the
+time the shot was aimed. `advanceQueue()` runs at the end of *every*
+`fire()` call (hit or miss). So: tap 1 fires a probe of color C (matching
+queue[0]=C at that instant); before its 0.25s flight lands, tap 2 fires a
+second probe, also visually color C (queue[0] was still C — tap 1 hadn't
+resolved yet, so nothing had advanced it). Tap 1's flight arrives first,
+resolves (matching, since queue[0] is still C at that point), and its
+`advanceQueue()` shifts `queue[0]` to a new color. Tap 2's flight then
+arrives and calls `fire()`, which now reads `this.queue[0]` as the
+*already-advanced* new color — a bead that was genuinely color C (the
+exact color the player saw and aimed with at tap 2's own moment) no longer
+matches, and it silently fails the `color === current` check. This is a
+completely different bug from the geometric hit-test (item 3's original
+"limb miss") — it requires no grazing angle at all, just two ordinary taps
+close enough together that the first one's flight hasn't landed yet, which
+the flight's own ~0.25s delay makes easy to trigger on any level, on any
+shell structure, dead-center or not. It is *not* a shot-color-vs-rendered-
+color mismatch under the new layer-fading palette either — `colorAt()` and
+`exposedColors()` both read the same post-fade `shell.palette` array that's
+actually used to paint the instances, confirmed consistent by direct
+inspection; that theory didn't pan out, but the queue-timing race did.
+
+**Fix (`Game.ts`, `handleGlobeTap`):** `this.session.fire(hit.shellId,
+hit.index)` is now called *immediately*, synchronously, at tap time — the
+probe's flight animation is now purely cosmetic, and only the resulting
+FX/audio/HUD reaction (`handleEvents`, the miss-bounce animation) is
+deferred to the flight's `onArrive`. Firing (and thus advancing the queue)
+strictly in tap order removes the race outright, regardless of how many
+shots are in flight or how long the animation takes. Verified with real
+clicks after the fix: the same level-5 double-tap scenario now consumes 2
+probes and pops 124 beads (both regions) instead of 0/0. Re-ran it several
+times for reliability — consistent every time.
+
+One thing this uncovered about the *test/dev* environment itself, not the
+game: this sandbox's headless Chromium (SwiftShader software rendering,
+often several concurrent instances) sometimes needs *multiple real seconds*
+of wall-clock time for a single nominal 0.25s probe flight to resolve
+(`Game.ts`'s render loop clamps each frame's `dt` to a 50ms max, so a
+starved/slow-framerate run just takes proportionally longer, not wrong —
+but a test reading state back too soon sees a false "nothing happened").
+Several early test runs were false negatives from this before the wait
+times were corrected; flagged here in case a future session hits the same
+false trail. On a real phone with normal frame rates this is a non-issue,
+but it does mean any device suffering real jank (heavy FX, GC pauses,
+thermal throttling) gets a *longer* window during which a second rapid tap
+can race the first — i.e. worse frame rates make the now-fixed race easier
+to trigger, not just slower.
+
+Attempting to also verify item 3 on multi-layer levels (21, 70+) hit an
+unrelated test confound worth recording: forcing `?level=21` directly loads
+a fresh session with `seenTutorials` empty, so `runTutorialsForLevel()`
+fires the level 21 `newPlanet`/`newLayer` tutorial cards, whose blocking
+overlay (`Tutorial`'s `.wb-tutorial-blocker`) intercepts real clicks outside
+its spotlight — a real click can land on the tutorial's `<svg>` mask
+instead of the canvas. Not a game bug (a real player reaching level 21
+legitimately sees this same tutorial once); re-tested on level 30 (still
+2-layer, no milestone/tutorial trigger) instead and levels 1/5 to confirm
+the fix on non-tutorial levels.
+
+### Item 6 re-investigated: the "regions + 2" math is exactly right —
+### the mismatch is hidden-layer regions the player can never see, and a
+### separate, real finding that cascade (item 5) cannot fire in real play
+
+Checked (a): the HUD's probe-dock number (`data-current-count`) does show
+`session.probes`, which equals `probesTotal` at level start — no display
+bug, no stale number.
+
+Checked (c)/cascade interaction — **found that `BeadGlobe.pop()`'s cascade
+(item 5, "unsupported outer-layer groups auto-fall") can never actually
+trigger during real gameplay**, contradicting the previous session's
+"verified" claim for that item (which tested it by directly, manually
+setting `alive[i]=0` on surface beads while bypassing the normal
+color/coverage rules — a state real play cannot reach). Reason: `coveredBy`
+(used by `isCovered()`, gating whether a bead can ever be popped) and
+`coversFootprint` (used by cascade's "is this bead's support all gone"
+check) are built by the *same* `buildCoveredBy()` call as exact set
+inverses (`buckets[bi].push(ci)` for every `ci` whose `forward[ci]`
+contains `bi`). So for an outer bead X's entire footprint (some inner-shell
+beads) to be dead, every one of those inner beads must already be exposed
+and popped — which requires *every* outer bead covering them, including X
+itself, to already be dead. X's own cascade condition (still alive, but
+"unsupported") can therefore only become true *after* X is already dead,
+which is a no-op. This is a genuine, distinct bug (dead code, verified by
+inspection, not this session's main target) — flagged for a future session
+rather than fixed here (out of scope for the shot-count report, and fixing
+"support" to mean something reachable, e.g. same-shell neighbor structural
+support rather than resting on the shell below, is a real design decision,
+not a one-line fix). Practical effect for item 6: since cascade never
+fires, it does **not** make the real minimum-shots-needed any lower than
+`countRegions()` — ruling out hypothesis (c) as the actual cause of the
+reported mismatch.
+
+Checked (b) — **this is the real explanation, confirmed with exact
+numbers.** `countRegions()` (and therefore `probesTotal = regions + 2`)
+correctly sums regions across *every* shell, including ones still 100%
+covered and invisible at level start — which is the mathematically true
+total minimum to clear the *whole* level, all layers, and is exactly what
+the item-6 comment always said it computes. But a player can only ever see
+the outermost shell's regions when a level starts, so what they'd count as
+"the minimum" by eye is a small fraction of what's actually budgeted.
+Measured directly via a new `regionsPerShell()` QA hook (outer shell listed
+first, i.e. what's visible at level start):
+
+| level | visible (outer shell) | hidden (inner shells) | total regions | probesTotal (regions+2) | what a player would guess (visible+2) |
+|---|---|---|---|---|---|
+| 1   | 6  (single shell, nothing hidden) | 0  | 6  | 8  | 8  |
+| 21  | 5  | 6 (surface)             | 11 | 13 | 7  |
+| 70  | 5  | 4 + 3 (layer + surface) | 12 | 14 | 7  |
+| 71  | 4  | 5 + 6                   | 15 | 17 | 6  |
+| 100 | 26 | 28 + 28                 | 82 | 84 | 28 |
+
+Level 1 (a single shell, nothing hidden) matches a player's expectation
+exactly — confirming the formula itself isn't broken; the gap only appears
+once layers exist, and it grows every time a level adds another hidden
+shell (level 100's 26-visible-vs-82-total is a *huge* gap). This is almost
+certainly what the owner is describing as "shots given are not minimum+2"
+— the number is internally exactly `regions + 2` as designed, but "regions"
+silently includes shells the player has no way to see or count at level
+start, so it reads as arbitrary/wrong from the player's side. Verified the
+fix's target/click harness is real and not stale by directly confirming a
+level-5 real double-tap clear consumes exactly `probesTotal` probes for its
+`regionsCount()` (8, matching 6 regions + 2 exactly) when played out.
+
+**Not changed this session:** left the actual budget formula and HUD as-is.
+This is a real, reproducible, explainable discrepancy, but it isn't a
+computational bug — `probesTotal` is exactly what the code says it is
+(`regions + 2`, all shells) and matches the stated design intent for
+"clear the whole level with 2 shots to spare." Silently changing the
+formula to only count the visible shell (making a multi-layer level's
+budget deceptively small right up until the hidden layers are revealed,
+at which point the player would run out) would trade one confusing number
+for a worse bug. Flagging this clearly for the owner/product decision:
+either (a) accept that "regions" always means "every shell, not just what
+you can see," and communicate that somewhere in the UI (e.g. show the
+layer count more prominently before play, or phrase the shot count as
+"shots for this level" rather than implying a discoverable "minimum"), or
+(b) deliberately redesign the budget to be per-layer (e.g. `visible
+regions of the current layer + 2`, topped up again each time a layer
+clears) if the intent is that "+2" should always feel proportionate to what
+the player can currently see. Did not pick a direction here — this is a
+product/design call, not a code defect, and doesn't fit "no speculative
+changes."
+
+Also checked (d): `CONTINUE_EXTRA_PROBES = 5` (item #17's Continue) is
+unrelated to `probesTotal` and only ever adds to `session.probes` after a
+loss is chosen to continue from — it can't be what's producing the
+regions+2 mismatch the owner describes at level start, but is a plausible
+source of confusion if he's mentally averaging "probes I got over the
+whole level including a Continue" against the level-start number.
+
+### Files touched this session
+
+`src/game/Game.ts` (the tap-timing fix; QA hooks `targetsForCurrentProbe`,
+`queueState`, `regionsCount`, `regionsPerShell`), `src/game/BeadGlobe.ts`
+(`findExposedRegionsOfColor`, `countRegionsPerShell` — both read-only
+helpers, no behavior change to existing methods). `src/game/GameSession.ts`
+and all other files are unchanged from v1.0.20's shipped state.

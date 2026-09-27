@@ -1128,6 +1128,20 @@ export class BeadGlobe implements GlobeAdapter {
     return total;
   }
 
+  /** QA-only diagnostic: `countRegions()`'s per-shell breakdown, to compare the budgeted total against what a player can actually see on the outermost shell at level start. */
+  countRegionsPerShell(): { kind: string; regions: number }[] {
+    return this.shells.map((s, shellId) => {
+      const seen = new Uint8Array(s.count);
+      let regions = 0;
+      for (let i = 0; i < s.count; i++) {
+        if (!s.alive[i] || seen[i]) continue;
+        regions++;
+        for (const b of this.rawRegion(shellId, i)) seen[b.index] = 1;
+      }
+      return { kind: s.kind, regions };
+    });
+  }
+
   private isCovered(shell: Shell, i: number): boolean {
     if (!shell.coveredBy || shell.coveringShellIndex === undefined) return false;
     const covering = this.shells[shell.coveringShellIndex];
@@ -1385,6 +1399,22 @@ export class BeadGlobe implements GlobeAdapter {
    * shell), or null if that color has no exposed beads. Used by the
    * integration layer to spotlight a sizeable target for the "fire" tutorial.
    */
+  /** Every currently-exposed connected region of the given hex color (any shell), largest first. */
+  findExposedRegionsOfColor(color: number): BeadRef[][] {
+    const out: BeadRef[][] = [];
+    for (let shellId = 0; shellId < this.shells.length; shellId++) {
+      const s = this.shells[shellId];
+      const seen = new Uint8Array(s.count);
+      for (let i = 0; i < s.count; i++) {
+        if (!s.alive[i] || seen[i] || this.isCovered(s, i) || s.palette[s.colorIdx[i]] !== color) continue;
+        const region = this.region(shellId, i);
+        for (const b of region) seen[b.index] = 1;
+        out.push(region);
+      }
+    }
+    return out;
+  }
+
   findLargestExposedRegionOfColor(color: number): BeadRef[] | null {
     let best: BeadRef[] | null = null;
     for (let shellId = 0; shellId < this.shells.length; shellId++) {

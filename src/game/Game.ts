@@ -229,6 +229,10 @@ export class Game {
     if (import.meta.env.DEV) {
       (window as unknown as { __wbQA: unknown }).__wbQA = {
         targetForCurrentProbe: () => this.qaTargetForCurrentProbe(),
+        targetsForCurrentProbe: (n: number) => this.qaTargetsForCurrentProbe(n),
+        queueState: () => (this.session ? { queue: [...this.session.queue], probes: this.session.probes, probesTotal: this.session.probesTotal, prismArmed: this.session.prismArmed, isOver: this.session.isOver } : null),
+        regionsCount: () => this.globe?.countRegions() ?? null,
+        regionsPerShell: () => this.globe?.countRegionsPerShell() ?? null,
         aliveBreakdown: () => this.qaAliveBreakdown(),
         grazingCloudHitTest: () => this.qaGrazingCloudHitTest(),
         fireAtCurrentProbeDirect: () => this.qaFireAtCurrentProbeDirect(),
@@ -874,14 +878,26 @@ export class Game {
     const color = this.session.prismArmed ? PRISM_PROBE_COLOR : this.session.queue[0];
     if (color == null) return;
 
+    // Resolve the shot (color match, region pop, queue advance) IMMEDIATELY at tap time, not when
+    // the probe's flight animation visually arrives ~0.25s later. Owner bug report ("correct-color
+    // shots don't register a hit"): `GameSession.fire()`'s match check reads `this.queue[0]` at
+    // call time — deferring that call to the flight's `onArrive` callback meant it was reading
+    // whatever the queue had become BY THEN, not what it was when the player aimed and fired. Any
+    // second shot fired before the first one's flight lands (a very ordinary rapid-tap pattern,
+    // and one this same flight delay makes easy to trigger) would see a queue the first shot's own
+    // resolution had already advanced, so a bead that was genuinely the displayed color at tap time
+    // could fail to match by the time it was checked. Firing (and thus advancing the queue) in tap
+    // order, synchronously, removes the race entirely; the flight animation is now purely cosmetic
+    // and only the FX/audio/HUD reaction is deferred to arrival.
+    const events = this.session.fire(hit.shellId, hit.index);
+    const missed = events.some((e) => e.type === 'fire' && e.result === 'miss');
+
     this.audio.play('fire');
     this.launchProbe(color, hit.point, { shellId: hit.shellId, index: hit.index }, (obj) => {
       if (!this.session || !this.globe) {
         this.disposeProbeObj(obj);
         return;
       }
-      const events = this.session.fire(hit.shellId, hit.index);
-      const missed = events.some((e) => e.type === 'fire' && e.result === 'miss');
       if (missed) {
         const centerWorld = this.globe.group.getWorldPosition(new THREE.Vector3());
         const outward = hit.point.clone().sub(centerWorld).normalize();
@@ -1321,38 +1337,53 @@ export class Game {
    * levels, or mid-animation). Read-only: never mutates game/session state.
    */
   private qaTargetForCurrentProbe(): { x: number; y: number } | null {
-    if (!this.globe || !this.session || !this.acceptInput || this.state !== 'playing') return null;
+    const t = this.qaTargetsForCurrentProbe(1);
+    return t.length > 0 ? t[0] : null;
+  }
+
+  /**
+   * QA-only diagnostic: like `qaTargetForCurrentProbe`, but returns up to `count` on-screen
+   * targets for DISJOINT exposed regions of the current queue color (not just the single largest
+   * one) — used to reproduce a rapid-double-tap race between two separate same-color patches,
+   * since a single connected region's beads all die together and can't isolate that race.
+   */
+  private qaTargetsForCurrentProbe(count: number): { x: number; y: number }[] {
+    if (!this.globe || !this.session || !this.acceptInput || this.state !== 'playing') return [];
     const exposed = this.globe.exposedColors();
-    if (exposed.size === 0) return null;
+    if (exposed.size === 0) return [];
     const wanted = this.session.prismArmed ? null : this.session.queue[0];
     const color = wanted !== null && exposed.has(wanted) ? wanted : (exposed.keys().next().value as number);
-    const region = this.globe.findLargestExposedRegionOfColor(color);
-    if (!region || region.length === 0) return null;
+    const regions = this.globe.findExposedRegionsOfColor(color).sort((a, b) => b.length - a.length);
+    if (regions.length === 0) return [];
 
     const rect = this.canvas.getBoundingClientRect();
     const camPos = this.scene.camera.position;
-    const scored = region
-      .map((b) => {
-        const p = this.globe!.positionOf(b.shellId, b.index);
-        const local = new THREE.Vector3(p.x, p.y, p.z);
-        const world = this.globe!.group.localToWorld(local.clone());
-        const normal = local.clone().normalize().transformDirection(this.globe!.group.matrixWorld);
-        const toCam = camPos.clone().sub(world).normalize();
-        return { b, world, facing: normal.dot(toCam) };
-      })
-      .filter((s) => s.facing > 0.05)
-      .sort((a, c) => c.facing - a.facing);
+    const out: { x: number; y: number }[] = [];
+    for (const region of regions) {
+      if (out.length >= count) break;
+      const scored = region
+        .map((b) => {
+          const p = this.globe!.positionOf(b.shellId, b.index);
+          const local = new THREE.Vector3(p.x, p.y, p.z);
+          const world = this.globe!.group.localToWorld(local.clone());
+          const normal = local.clone().normalize().transformDirection(this.globe!.group.matrixWorld);
+          const toCam = camPos.clone().sub(world).normalize();
+          return { b, world, facing: normal.dot(toCam) };
+        })
+        .filter((s) => s.facing > 0.05)
+        .sort((a, c) => c.facing - a.facing);
 
-    for (const s of scored.slice(0, 60)) {
-      const ndc = s.world.clone().project(this.scene.camera);
-      if (ndc.z > 1 || ndc.z < -1) continue;
-      const x = (ndc.x * 0.5 + 0.5) * rect.width + rect.left;
-      const y = (1 - (ndc.y * 0.5 + 0.5)) * rect.height + rect.top;
-      if (x < rect.left + 2 || x > rect.right - 2 || y < rect.top + 2 || y > rect.bottom - 2) continue;
-      const hit = this.pickBead(x, y);
-      if (hit && hit.shellId === s.b.shellId && hit.index === s.b.index) return { x, y };
+      for (const s of scored.slice(0, 60)) {
+        const ndc = s.world.clone().project(this.scene.camera);
+        if (ndc.z > 1 || ndc.z < -1) continue;
+        const x = (ndc.x * 0.5 + 0.5) * rect.width + rect.left;
+        const y = (1 - (ndc.y * 0.5 + 0.5)) * rect.height + rect.top;
+        if (x < rect.left + 2 || x > rect.right - 2 || y < rect.top + 2 || y > rect.bottom - 2) continue;
+        const hit = this.pickBead(x, y);
+        if (hit && hit.shellId === s.b.shellId && hit.index === s.b.index) { out.push({ x, y }); break; }
+      }
     }
-    return null;
+    return out;
   }
 
   /**
