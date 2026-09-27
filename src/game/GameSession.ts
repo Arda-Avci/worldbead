@@ -90,9 +90,20 @@ export class GameSession {
     this.refillQueue();
   }
 
+  /**
+   * `refillQueue()` is normally kept up to date by `advanceQueue()` on every `fire()` (hit or
+   * miss), but time can pass — and other pops (a power's radius/hemisphere/band sweep, or an
+   * unrelated shot) can happen — between when the *back* slot (`queue[1]`) was last validated and
+   * when the player swaps it to the front. Re-validating here closes that gap: without it, a swap
+   * could bring a color into `queue[0]` that no longer has any exposed bead anywhere (its last
+   * region popped by something else while it sat unused in the back slot), and every tap would
+   * silently miss — burning probes — until the *next* `fire()`'s own `advanceQueue()` happened to
+   * self-correct it.
+   */
   swap(): SessionEvent[] {
     if (this.ended) return [];
     this.queue = [this.queue[1], this.queue[0]];
+    this.refillQueue();
     return [{ type: 'swap' }];
   }
 

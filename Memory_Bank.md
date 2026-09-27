@@ -1800,3 +1800,198 @@ whole level including a Continue" against the level-start number.
 (`findExposedRegionsOfColor`, `countRegionsPerShell` — both read-only
 helpers, no behavior change to existing methods). `src/game/GameSession.ts`
 and all other files are unchanged from v1.0.20's shipped state.
+
+## Follow-up session: three-item investigation (queue "stall", layer-count
+## audit, residual raycast misses) — one real fix each for items 1 and 3;
+## item 2 re-confirmed clean with exhaustive data
+
+Owner asked for three things, in priority order. Reproduced with a live
+harness driving the real `fire()`/`pop()` pipeline via Playwright + the
+dev-only `__wbQA` hooks (adding a few read-only diagnostics: `exposedColorsHex`,
+`regionsOfColorAnywhere(hex)`, `grazingHitTestAllShells` — all dev-only,
+stripped from production exactly like the existing hooks, re-verified via
+`grep -c __wbQA dist/assets/*.js` → 0 after `npm run build`).
+
+**Sandbox note for future sessions:** this environment's headless Chromium
+becomes extremely slow (single grazing sweep taking minutes instead of
+seconds, GPU process pegged at 300%+ CPU) when SwiftShader's own GPU
+process is used for anything beyond a handful of frames — launching with
+`chromium.launch({ args: ['--disable-gpu'] })` fixed this completely
+(the game's own rendering/raycasting logic runs identically either way,
+since raycasting is pure THREE.js math against object matrices, not
+GPU-dependent). Use `--disable-gpu` in any future Playwright harness here.
+
+### Item 1 ("board gets stuck with no poppable target"): reproduced, but
+### root cause is camera framing, not a queue/exposure logic bug — no
+### permanent stall found; one small real hole in queue validation fixed
+### anyway
+
+Reproduced the exact symptom the previous session reported: on a freshly
+loaded level (e.g. level 70, first shot, before anything popped; also
+levels 21/71/100/150 a few shots in), `fireAtCurrentProbeDirect` (and its
+underlying `qaTargetsForCurrentProbe`, which requires a bead of the queued
+color to be facing the camera, within the canvas, and round-trip-verified
+through the real `pickBead`) reports no on-screen target, even though
+`GameSession.queue[0]` holds a color that beads are genuinely alive in.
+
+**But this is a snapshot-camera-visibility artifact, not a logic bug.**
+Added two camera-blind diagnostics — `exposedColorsHex()` (the raw
+`globe.exposedColors()` keys, exactly what `GameSession.pickColor()` itself
+reads) and `regionsOfColorAnywhere(hex)` (`findExposedRegionsOfColor`,
+which ignores facing/screen-position entirely) — and checked every single
+stall this session reproduced (levels 21, 70, 71, 100, 150): in **every**
+case, `queueColorAtStall` was present in `exposedColorsHex`, and
+`regionsOfColorAnywhere` returned real, often large, regions (e.g. level
+70's first-shot stall: regions of 244 and 50 beads on the outer shell;
+level 21's 8-shot stall: 14 and 79 beads). This directly rules out the
+task's hypothesis (a)/(b)/(c) — `GameSession.pickColor()`/`refillQueue()`
+(`GameSession.ts`) only ever chooses colors from `globe.exposedColors()`,
+which shares the exact same `isCovered()` logic as `region()`/
+`findExposedRegionsOfColor()`, so they cannot disagree by construction, and
+this was directly confirmed, not just inferred.
+
+**Then proved it's recoverable by ordinary play**, not a permanent lock:
+for every one of the 5 stalls above, a single slow Playwright drag gesture
+(and in a couple of cases, nothing at all — the game's own idle auto-spin,
+which runs continuously from level 15 on, brought the target into view
+between two evaluate calls a fraction of a second apart) made
+`targetForCurrentProbe()` immediately return a real, hittable point. This
+is inherent to a rotate-a-3D-globe game: `GameSession` is deliberately
+camera-agnostic ("pure rules, no DOM, no THREE" — its own docstring), so it
+has no way to bias its random color pick toward whatever the camera happens
+to be facing at that instant, and doesn't need to — the player (or
+auto-spin) rotating is the intended way to reveal more of the sphere,
+exactly as the level-1 `rotate` tutorial teaches. A single-shell early
+level (no auto-spin below level 15) requires a manual drag; every level
+this session could reach with the harness recovered in well under a
+second of real interaction. No permanent "queued color that can never be
+satisfied by any exposed bead, from any angle" case was found.
+
+**One real (much narrower) hole found and fixed anyway:** `GameSession`'s
+own invariant — every queued color is currently exposed — is maintained by
+`refillQueue()`, called from `advanceQueue()` after every `fire()`. But
+`swap()` moved `queue[1]` into the front slot without ever calling
+`refillQueue()`. `queue[1]` was valid *when it was set*, but time (and
+other pops — a power's radius/hemisphere/band sweep, or an unrelated shot)
+can pass before the player presses swap, and `queue[1]`'s last exposed
+region could be gone by then. Confirmed this is real by inspection (not
+hypothetical): nothing else ever revalidates the back slot before a swap
+promotes it. Impact was self-limiting even before the fix (the *next*
+`fire()`'s own `advanceQueue()` would have caught and replaced it,
+wasting at most one probe on a guaranteed miss), but it's a genuine gap in
+the "always exposed" contract the rest of the code relies on, so
+`GameSession.swap()` (`GameSession.ts`) now calls `this.refillQueue()`
+after swapping. Also checked the alien-invasion `queueOverrideColor`
+write (`Game.ts`'s `applyInvasionShotOutcome`, which sets `queue[1]`
+directly to `FIRE_COLOR`, bypassing `refillQueue` the same way) — this one
+was already safe, because it's always re-validated the next time it
+shifts into the front slot via a real `fire()`; the `swap()` fix above
+closes the *only* path that could promote either slot without validation.
+
+Verified no regression: the exact level-21 8-shot stall scenario (same
+seed, fully deterministic) reproduces byte-for-byte identically after
+both this fix and item 3's fix below (same `queueColorAtStall`, same
+`regionsOfQueueColorAnywhere: [14, 79]`), and levels 1/5 play through
+multiple shots with `stalled=false`.
+
+### Item 2 (layer count): exhaustively re-checked, still no mismatch found
+
+Compared `layerCountForLevel()` (`levels.ts`) against `layerProgress()`'s
+`total` (`BeadGlobe.ts`, counting actual non-`clouds` shells built) and the
+HUD's own `[data-layer-line]` text, across 1, 2, 20, 21, 22, 45, 69, 70,
+71, 100, 150, 179, 180, 181, 200 — i.e. every milestone (21/70/180) from
+both sides, plus deep mid-range points in every bracket. Every single
+level matched on all three: level 1 → 1/1 (no HUD line, correct — HUD
+hides it for single-layer levels); 20/22/45/69 → 2/2 "Layer 1/2"; 71/100/
+150/179 → 3/3 "Layer 1/3"; 180/181/200 → 4/4 "Layer 1/4" (181 also
+correctly adds a `clouds` shell on top, not counted as a "layer" per
+GDD §13 — `layerProgress()` filters it out explicitly and the HUD total
+still reads 4, not 5). `current` was 1/`total` in every case because these
+are all freshly-loaded levels (outermost shell still 100% alive) — this
+also incidentally re-confirms the 2026-09-27 layer-1 fix is holding: no
+skip from layer 0, no off-by-one anywhere in the milestone table. Two of
+the 15 levels (2 and 70) transiently returned `null` from the QA hook at a
+fixed 1.5s post-navigation wait — re-tested and confirmed this is pure
+page-load timing (a cold shader/texture compile taking a little over a
+second before `this.globe` exists yet), not a game bug: waiting longer
+(or re-running) always produces the correct, matching number. Could not
+reproduce any actual mismatch after this exhaustive pass — reporting that
+clearly rather than repeating the previous session's inconclusive result.
+
+### Item 3 ("some shots from certain angles still aren't detected"):
+### reproduced a genuine, different root cause from the already-fixed
+### timing race — a real geometric fix, not a band-aid
+
+The tap-timing race (commit a5311c7) is unrelated to this — re-confirmed
+by inspection that `Game.ts`'s `handleGlobeTap` still fires synchronously
+at tap time. The owner's follow-up report ("still happens with slow single
+shots, from certain angles") pointed at `resolveHit`'s own fallback/snap
+logic (`BeadGlobe.ts`), which is where the real bug was.
+
+**Root cause:** `resolveHit`'s limb/gap fallback (added for item #9 and its
+round 2) computed exactly ONE point (`hits[0].point`, or — when the ray
+threaded every shell's gaps at once — an analytic intersection with the
+OUTER bounding sphere only), normalized it into a single shared direction,
+and reused that SAME direction to search every shell's own bead list for
+the nearest candidate. This is only exactly correct for the one shell
+whose actual radius matches the point that direction came from. The
+gameplay camera sits at a *finite* distance (~5.2 world units, computed
+from `computeGameplayShot`'s framing math), not at infinity, so a ray
+tangent to (or passing near) a shell of radius r is tangent to/near a
+genuinely different angular position, from the globe's center, than the
+same ray is for a shell of a different radius — concretely, at a 3-layer
+level's radii (surface 1.0, outermost layer ~1.51), the two shells'
+own silhouette half-angles from the camera (`arcsin(r/d)`) differ by
+roughly 8°, which is *bigger* than the ~9-13° per-shell tolerance
+(`shell.spacing * 1.45`/`1.6`) the snap search uses. Reusing one shell's
+hit direction to search a different-radius shell injects exactly that much
+angular error — enough, right at the limb on a rotated/tilted globe, to
+push a genuinely on-screen, correct-color, exposed bead outside tolerance
+and produce a real miss, with no timing race involved at all.
+
+**Fix:** `resolveHit` now takes the real tap ray (`origin`/`direction`,
+from `Game.ts`'s `raycaster.ray` — replacing the old single `fallbackPoint`
+parameter) and, for each shell, computes its own analytic ray/sphere
+intersection at THAT shell's own real radius (new `raySphereNearestEntry`
+helper) before searching that shell's bead list — removing the
+cross-shell parallax error entirely rather than adding another special
+case. `Game.ts`'s `pickBead` simplified to match (no more separate
+outer-bounding-sphere fallback computation; `resolveHit` now does its own
+per-shell version of that same idea, correctly, for every shell).
+
+**Verification:** added a QA hook, `grazingHitTestAllShells` (generalizes
+the existing clouds-only `qaGrazingCloudHitTest` to every shell kind), and
+drove it through 5 real camera orientations (initial + 4 slow, deliberate
+single-drag rotations, including tilted ones) on level 1 (1 shell), level
+21 (2 shells) and level 70 (3 shells — the biggest radius spread). Every
+currently-alive, currently-exposed bead within a grazing `0 < facing <
+0.2` band of the camera, at every orientation, was tested with a real
+`pickBead()` round-trip: **0 real misses out of 1095 total grazing-bead
+samples across the three levels** (370 + 357 + 368; `rawMiss` — the
+raycast hitting no instance at all — was non-zero on level 1, exactly the
+gap-threading case the fallback exists for, and every one of those still
+resolved correctly). Did not do a byte-for-byte "before" A/B rerun (the
+fix's own derivation — the ~8° parallax gap exceeding the ~9-13° tolerance
+— already explains the previous, now-eliminated failure mode directly);
+the exhaustive post-fix zero-miss result across three structurally
+different shell counts is the verification.
+
+### Sandbox performance note
+
+Confirmed (independently of this game's own code) that SwiftShader's GPU
+process can peg 300%+ CPU and make even a handful of `mouse.move` events
+take minutes to resolve in this sandbox; `chromium.launch({ args:
+['--disable-gpu'] })` fixed it outright with no change in correctness
+(raycasting is CPU-side THREE.js math, not GPU work) — worth remembering
+for any future Playwright harness in this repo, since it looks exactly
+like a hung test otherwise.
+
+### Files touched this session
+
+`src/game/BeadGlobe.ts` (`resolveHit`'s per-shell ray/sphere fix, new
+`raySphereNearestEntry` helper — item 3), `src/game/GameSession.ts`
+(`swap()` now calls `refillQueue()` — item 1's real, narrow fix),
+`src/game/Game.ts` (`pickBead` updated to pass the real ray instead of a
+single fallback point; new dev-only QA hooks `exposedColorsHex`,
+`regionsOfColorAnywhere`, `grazingHitTestAllShells`). `levels.ts` and all
+other files are unchanged.

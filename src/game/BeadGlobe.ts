@@ -731,6 +731,26 @@ function buildCoveredBy(coveringDirs: Float32Array, coveringSpacing: number, cov
   return { coveredBy: buckets.map((arr) => Int32Array.from(arr)), footprint: forward };
 }
 
+/**
+ * Nearest point (smallest positive `t`) where a ray (`origin` + `t * dir`, `dir` unit length)
+ * enters a sphere of `radius` centered at the local origin, or null if it misses entirely. Used by
+ * `resolveHit` to find each shell's OWN true entry point at that shell's own radius (see its doc
+ * comment) instead of reusing a different shell's hit point/direction, which is the source of
+ * limb-tap parallax error between concentric shells of different radii.
+ */
+function raySphereNearestEntry(origin: THREE.Vector3, dir: THREE.Vector3, radius: number): THREE.Vector3 | null {
+  const b = origin.dot(dir);
+  const c = origin.lengthSq() - radius * radius;
+  const disc = b * b - c;
+  if (disc < 0) return null;
+  const sqrtDisc = Math.sqrt(disc);
+  const t1 = -b - sqrtDisc;
+  const t2 = -b + sqrtDisc;
+  const t = t1 >= 0 ? t1 : t2 >= 0 ? t2 : -1;
+  if (t < 0) return null; // sphere is entirely behind the ray's origin
+  return origin.clone().addScaledVector(dir, t);
+}
+
 /** Rotates a flat (x,y,z)*n direction array around the world Y axis by `angle` radians. */
 function rotateDirsY(dirs: Float32Array, angle: number): Float32Array {
   const c = Math.cos(angle), s = Math.sin(angle);
@@ -1480,16 +1500,35 @@ export class BeadGlobe implements GlobeAdapter {
    * cloud bead could be un-hittable from most angles even though it's
    * clearly on screen (item #9).
    *
-   * `fallbackPoint` (a world-space point on the globe's own outer bounding
-   * sphere, from an analytic ray/sphere test — see `Game.ts`'s `pickBead`)
-   * is used for the same snap when the raycast hit *no* bead instance at
-   * all, which is exactly the case at the globe's limb: a grazing ray can
-   * thread every instance's gaps at once (not just the cloud shell's), so
-   * `hits` comes back empty and there was previously no fallback whatsoever
-   * — this is why cloud beads near the limb stayed unhittable from some
-   * angles even after item #9 (owner bug report, round 2).
+   * `ray` (the world-space tap ray — origin + normalized direction, from
+   * `Game.ts`'s `raycaster.ray`) drives the same snap when the raycast hit no
+   * bead instance at all (or hit only dead/covered ones): a discrete
+   * instanced sphere always has small gaps between beads, and at
+   * oblique/grazing camera angles those gaps get threaded far more often
+   * even though the patch reads as visually solid (item #9).
+   *
+   * Round 3 (owner bug report: "still misses from some angles, on a tilted/
+   * spun globe, not a timing race"): the previous version snapped every
+   * shell to the SAME single direction — wherever `hits[0].point` (or a
+   * fallback point on the OUTER bounding sphere) happened to land — and
+   * reused it to search every shell's own bead list. That is only exactly
+   * correct for the one shell whose real radius matches that point's
+   * distance from the globe's center: a perspective ray tangent to (or
+   * passing near) a shell of radius r sits at a genuinely different angle
+   * from the globe's center than the same ray does for a shell of a
+   * different radius (the camera is a finite distance away, not
+   * orthographic) — e.g. at the gameplay camera distance, a 3-layer level's
+   * outermost shell (radius ~1.51) and its surface (radius 1.0) have visibly
+   * different silhouette/limb angles, several degrees apart. Reusing one
+   * shell's own hit direction to search a *different*-radius shell injects
+   * exactly that many degrees of angular error — enough, right at the limb,
+   * to push a genuinely on-screen bead outside the small (~9-13°) per-shell
+   * tolerance below and produce a real, reproducible miss on a correct-
+   * color, exposed bead, independent of any timing race. Fixed by computing
+   * a SEPARATE analytic ray/sphere intersection per shell, at that shell's
+   * own real radius, before searching that shell's own bead list.
    */
-  resolveHit(hits: THREE.Intersection[], fallbackPoint?: THREE.Vector3 | null): { shellId: number; index: number; point: THREE.Vector3 } | null {
+  resolveHit(hits: THREE.Intersection[], ray?: { origin: THREE.Vector3; direction: THREE.Vector3 } | null): { shellId: number; index: number; point: THREE.Vector3 } | null {
     for (const h of hits) {
       if (h.instanceId === undefined) continue;
       const shellId = (h.object as THREE.InstancedMesh).userData.shellId as number;
@@ -1498,25 +1537,24 @@ export class BeadGlobe implements GlobeAdapter {
       if (!shell.alive[i] || this.isCovered(shell, i)) continue;
       return { shellId, index: i, point: h.point.clone() };
     }
-    const originPoint = hits.length > 0 ? hits[0].point : fallbackPoint;
-    if (!originPoint) return null;
-    const worldLocal = this.group.worldToLocal(originPoint.clone());
-    if (worldLocal.lengthSq() < 1e-8) return null;
-    worldLocal.normalize();
-    // Owner bug report (round 2): a grazing/limb tap can thread every bead instance's gaps at
-    // once, on ANY shell — not just clouds. The previous version only snapped to the nearest
-    // cloud bead here, so a ground/surface/layer bead at the limb stayed unhittable from some
-    // angles even when a bead of the tapped color was clearly on screen there. This now scans
-    // every shell for its own nearest alive, exposed bead within that shell's own real angular
-    // bead size (matching each shell's own neighbor-graph tolerance), and — when more than one
-    // shell has a candidate within tolerance at the same screen point — prefers the one with the
-    // larger world radius, i.e. whichever shell is actually rendered on top there.
-    let best: { shellId: number; index: number; radius: number } | null = null;
+    if (!ray) return null;
+    // Ray into the group's own local space (a plain sphere-at-origin test per shell needs it
+    // there): translation for the origin, rotation-only (no translation) for the direction.
+    const invMatrix = tmpM.copy(this.group.matrixWorld).invert();
+    const localOrigin = ray.origin.clone().applyMatrix4(invMatrix);
+    const localDir = ray.direction.clone().transformDirection(invMatrix).normalize();
+
+    let best: { shellId: number; index: number; radius: number; point: THREE.Vector3 } | null = null;
     for (let shellId = 0; shellId < this.shells.length; shellId++) {
       const shell = this.shells[shellId];
+      // This shell's OWN entry point, analytically, on a sphere of its own real radius — not
+      // reused from a different shell's radius (see this method's doc comment).
+      const hitLocal = raySphereNearestEntry(localOrigin, localDir, shell.radius);
+      if (!hitLocal) continue;
+      const dir = tmpV.copy(hitLocal).normalize();
       // The shell may be drifting (item #19) — undo its own rotation so the query direction
       // lines up with its raw `dirs` array before scanning.
-      const local = this.toShellLocal(shell, { x: worldLocal.x, y: worldLocal.y, z: worldLocal.z });
+      const local = this.toShellLocal(shell, { x: dir.x, y: dir.y, z: dir.z });
       let bi = -1;
       let bestDot = -1;
       for (let i = 0; i < shell.count; i++) {
@@ -1528,11 +1566,11 @@ export class BeadGlobe implements GlobeAdapter {
       const toleranceFactor = shell.kind === 'clouds' ? 1.6 : 1.45;
       const tolerance = Math.cos(shell.spacing * toleranceFactor);
       if (bestDot > tolerance && (!best || shell.radius > best.radius)) {
-        best = { shellId, index: bi, radius: shell.radius };
+        best = { shellId, index: bi, radius: shell.radius, point: this.group.localToWorld(hitLocal.clone()) };
       }
     }
     if (!best) return null;
-    return { shellId: best.shellId, index: best.index, point: originPoint.clone() };
+    return { shellId: best.shellId, index: best.index, point: best.point };
   }
 
   beadRadius(shellId = 0): number {

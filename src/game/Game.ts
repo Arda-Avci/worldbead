@@ -235,8 +235,15 @@ export class Game {
         regionsPerShell: () => this.globe?.countRegionsPerShell() ?? null,
         aliveBreakdown: () => this.qaAliveBreakdown(),
         grazingCloudHitTest: () => this.qaGrazingCloudHitTest(),
+        grazingHitTestAllShells: () => this.qaGrazingHitTestAllShells(),
         fireAtCurrentProbeDirect: () => this.qaFireAtCurrentProbeDirect(),
         layerProgress: () => this.globe?.layerProgress() ?? null,
+        // QA-only diagnostics for the "queue color has no findable target" investigation: the raw
+        // exposed-color hex list (camera-blind, i.e. what `GameSession.pickColor()` itself sees),
+        // and whether a given hex has ANY exposed region anywhere on the globe (also camera-blind) —
+        // lets a script tell "off-camera, needs rotation" apart from "truly nowhere exposed".
+        exposedColorsHex: () => (this.globe ? [...this.globe.exposedColors().keys()] : null),
+        regionsOfColorAnywhere: (hex: number) => (this.globe ? this.globe.findExposedRegionsOfColor(hex).map((r) => r.length) : null),
         sunState: () => this.scene.debugSunState(),
         toastState: () => {
           const el = this.canvas.parentElement?.querySelector('[data-toast]');
@@ -1192,20 +1199,11 @@ export class Game {
     if (!this.globe) return null;
     this.setRaycasterFromClient(clientX, clientY);
     const hits = this.raycaster.intersectObjects(this.globe.raycastTargets(), false);
-    // A grazing/limb tap can thread every bead instance's gaps at once, so the raycast finds
-    // no instance to hit at all — with no fallback, `resolveHit`'s own cloud-snap (item #9)
-    // never even runs. Compute where the ray meets the globe's own outer bounding sphere (same
-    // analytic technique as `screenToGlobeDir`'s comet-swipe fallback) and hand it to
-    // `resolveHit` so a visually-on-screen limb bead still resolves.
-    let fallbackPoint: THREE.Vector3 | null = null;
-    if (hits.length === 0) {
-      const centerWorld = this.globe.group.getWorldPosition(new THREE.Vector3());
-      const scale = this.globe.group.getWorldScale(new THREE.Vector3()).x || 1;
-      const sphere = new THREE.Sphere(centerWorld, this.globe.outerRadius() * scale);
-      const hitPoint = new THREE.Vector3();
-      if (this.raycaster.ray.intersectSphere(sphere, hitPoint)) fallbackPoint = hitPoint;
-    }
-    return this.globe.resolveHit(hits, fallbackPoint);
+    // A grazing/limb tap can thread every bead instance's gaps at once, so the raycast finds no
+    // instance to hit at all (or only dead/covered ones) — hand the real tap ray to `resolveHit`
+    // so it can fall back to an analytic per-shell ray/sphere snap (item #9, and round 3's
+    // per-shell-radius fix — see `resolveHit`'s doc comment) instead of giving up.
+    return this.globe.resolveHit(hits, { origin: this.raycaster.ray.origin, direction: this.raycaster.ray.direction });
   }
 
   private pickBeadLocalPoint(clientX: number, clientY: number): THREE.Vector3 | null {
@@ -1427,6 +1425,47 @@ export class Game {
       if (result) hit++;
     }
     return { total, hit, rawMiss };
+  }
+
+  /**
+   * QA-only: same idea as `qaGrazingCloudHitTest`, but scans every shell (not just `clouds`) — used
+   * to check the owner's "still misses from some angles, not a timing race" report against every
+   * kind of shell (surface/layer/clouds), not only clouds. Also reports, per miss, the bead's own
+   * color so a script can tell a genuine "correct-color exposed bead, no hit at all" case apart from
+   * one that's merely covered/not the front-facing side.
+   */
+  private qaGrazingHitTestAllShells(): { total: number; hit: number; rawMiss: number; misses: { shellId: number; index: number; x: number; y: number; facing: number }[] } | null {
+    if (!this.globe) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    const camPos = this.scene.camera.position;
+    let total = 0, hit = 0, rawMiss = 0;
+    const misses: { shellId: number; index: number; x: number; y: number; facing: number }[] = [];
+    for (let shellId = 0; shellId < this.globe.shells.length; shellId++) {
+      const shell = this.globe.shells[shellId];
+      for (let i = 0; i < shell.count; i++) {
+        if (!this.globe.isExposed(shellId, i)) continue;
+        const p = this.globe.positionOf(shellId, i);
+        const local = new THREE.Vector3(p.x, p.y, p.z);
+        const world = this.globe.group.localToWorld(local.clone());
+        const normal = local.clone().normalize().transformDirection(this.globe.group.matrixWorld);
+        const toCam = camPos.clone().sub(world).normalize();
+        const facing = normal.dot(toCam);
+        if (facing <= 0 || facing >= 0.2) continue;
+        const ndc = world.clone().project(this.scene.camera);
+        if (ndc.z > 1 || ndc.z < -1) continue;
+        const x = (ndc.x * 0.5 + 0.5) * rect.width + rect.left;
+        const y = (1 - (ndc.y * 0.5 + 0.5)) * rect.height + rect.top;
+        if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
+        total++;
+        this.setRaycasterFromClient(x, y);
+        const rawHits = this.raycaster.intersectObjects(this.globe.raycastTargets(), false);
+        if (rawHits.length === 0) rawMiss++;
+        const result = this.pickBead(x, y);
+        if (result) hit++;
+        else misses.push({ shellId, index: i, x, y, facing });
+      }
+    }
+    return { total, hit, rawMiss, misses };
   }
 
   /**
