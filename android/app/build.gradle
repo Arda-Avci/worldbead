@@ -1,9 +1,20 @@
 apply plugin: 'com.android.application'
 
-// CI (see .github/workflows/android.yml) sets GITHUB_RUN_NUMBER, which
-// increases on every workflow run; a local build falls back to 1 so
-// versionCode always increases across CI builds instead of staying at 1.
-def ciBuildNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()
+// Version scheme shared with vite.config.ts: v1.0.<N> where N is the number
+// of commits on main, so a web build and an APK build from the same commit
+// show the same version. Falls back to 1 if git isn't available.
+def commitCount = {
+    try {
+        def proc = ['git', 'rev-list', '--count', 'HEAD'].execute(null, rootDir)
+        proc.waitFor()
+        if (proc.exitValue() == 0) {
+            return proc.in.text.trim().toInteger()
+        }
+    } catch (Exception ignored) {
+        // fall through to default
+    }
+    return 1
+}()
 
 android {
     namespace = "com.ardaavci.worldbead"
@@ -12,8 +23,8 @@ android {
         applicationId "com.ardaavci.worldbead"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode ciBuildNumber
-        versionName "1.0.${ciBuildNumber}"
+        versionCode commitCount
+        versionName "1.0.${commitCount}"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

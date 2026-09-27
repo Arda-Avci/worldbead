@@ -626,6 +626,15 @@
 .wb-switch[data-on="true"] { background: var(--wb-accent); }
 .wb-switch[data-on="true"]::after { transform: translateX(20px); }
 
+.wb-version-label {
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--wb-text-dim);
+  opacity: 0.7;
+  margin-top: 4px;
+  text-align: center;
+}
+
 .wb-credits {
   font-size: 10.5px;
   line-height: 1.5;
@@ -749,10 +758,10 @@
   position: absolute;
   left: calc(10px + var(--wb-safe-l));
   bottom: calc(8px + var(--wb-safe-b));
-  font-size: 10px;
+  font-size: 12px;
   letter-spacing: 0.02em;
   color: var(--wb-text-dim);
-  opacity: 0.35;
+  opacity: 0.7;
   pointer-events: none;
 }
 

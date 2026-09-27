@@ -406,6 +406,7 @@ export class GameUI {
       </div>
       <button class="wb-btn-secondary" type="button" data-replay>${S.replayIntro}</button>
       <div class="wb-credits">${escapeHtml(S.credits)}</div>
+      <div class="wb-version-label">${__BUILD_LABEL__}</div>
     `;
     card.querySelectorAll<HTMLButtonElement>('[data-key]').forEach((btn) => {
       btn.addEventListener('click', () => {
