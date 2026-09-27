@@ -110,8 +110,10 @@ function globalK(progress: number): number {
  * a cross-import, per this codebase's convention of not importing between
  * modules that shouldn't depend on each other's internals.
  */
-const BEAD_RADIUS_STEP = 0.03; // must match BeadGlobe.ts makeShell's extra-layer geometric radius step
+const BEAD_RADIUS_STEP = 0.17; // must match BeadGlobe.ts's LAYER_RADIUS_STEP (fixed 2026-09-27: was 0.03, smaller than a single bead's own radius, causing adjacent shells to visually interpenetrate at every multi-layer level — see BeadGlobe.ts's comment for the full derivation)
 const BEAD_RADIUS_FACTOR = 0.56; // must match BeadGlobe.ts makeShell's non-cloud bead-radius factor
+/** Must match BeadGlobe.ts's CLOUD_RADIUS_EXTRA (fixed alongside BEAD_RADIUS_STEP above — was 0.06). */
+const CLOUD_RADIUS_EXTRA = 0.18;
 /** Level 1's bead radius — the hard ceiling no bead, on any layer or level, may ever exceed. */
 const BEAD_RADIUS_MAX = 0.072;
 /**
@@ -232,8 +234,8 @@ export function getLevel(level: number): LevelConfig {
   // at `BEAD_RADIUS_MAX` by `layerBeadRadius` so cloud beads can never exceed level 1's own size.
   const cloudDepthFromSurface = numExtra + 1;
   const cloudBeadRadius = layerBeadRadius(sizeProgress, cloudDepthFromSurface);
-  // Must match BeadGlobe.ts makeShell's actual cloud shell world-radius scale (`cloudRadius` there).
-  const cloudShellScale = 1 + BEAD_RADIUS_STEP * numExtra + 0.06;
+  // Must match BeadGlobe.ts's actual cloud shell world-radius scale (`cloudRadius` there).
+  const cloudShellScale = 1 + BEAD_RADIUS_STEP * numExtra + CLOUD_RADIUS_EXTRA;
   const cloudBeadCount = cloud ? cloudBeadCountForRadius(cloudBeadRadius, cloudShellScale) : 0;
   const cloudDriftEnabled = cloud && lv >= CLOUD_DRIFT_LEVEL;
   const cloudFluffiness = clamp((lv - FIRST_CLOUD_LEVEL) / (CLOUD_FLUFF_SATURATION_LEVEL - FIRST_CLOUD_LEVEL), 0, 1);

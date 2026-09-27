@@ -20,6 +20,23 @@ export type TextureMap = Partial<Record<TextureName, ImageDataLike>>;
 const BEAD_RADIUS_FACTOR = 0.56;
 /** Same, for the `clouds` shell — clouds overlap more so a patch reads as a solid layer, not dots. */
 const BEAD_RADIUS_FACTOR_CLOUD = 0.72;
+/**
+ * World-radius gap between adjacent concentric shells (owner bug report: "layers look like
+ * they're interpenetrating"). Each shell's own bead radius is `spacing(designCount) * shellRadius
+ * * factor` (see `makeShell`), and `levels.ts`'s `layerBeadRadius`/`surfaceBeadRadius` curve
+ * targets bead radii from `BEAD_RADIUS_MIN` (0.03) up to `BEAD_RADIUS_MAX` (0.072) — so two
+ * adjacent shells can need as much as ~0.14 world units of combined bead radius just to each render
+ * at their intended size. The old step (0.03) was smaller than a SINGLE bead's radius, let alone
+ * two adjacent shells' combined radii, so every multi-layer level's shells visually interpenetrated
+ * by construction, not just right after a milestone. Verified via a full scan across every level/
+ * depth combination (`layerBeadRadius`'s own curve, worst case ~0.1395 at level 70's two outer
+ * layers) that this value keeps a real, positive, ≥0.03-world-unit gap everywhere. Duplicated as
+ * `LAYER_RADIUS_STEP`/`CLOUD_RADIUS_EXTRA` in `levels.ts` (must match — see the comment there),
+ * per this codebase's existing module-isolation convention (bead-size curve section up top).
+ */
+const LAYER_RADIUS_STEP = 0.17;
+/** Extra world-radius gap between the outermost body shell and `clouds`, beyond `LAYER_RADIUS_STEP * numExtra` — see `LAYER_RADIUS_STEP`'s comment. Was 0.06 (also too small: clouds' own bead radius can be as big as a body shell's). Must match `levels.ts`'s `CLOUD_RADIUS_EXTRA`. */
+const CLOUD_RADIUS_EXTRA = 0.18;
 function beadRadiusFactor(kind: Shell['kind']): number {
   return kind === 'clouds' ? BEAD_RADIUS_FACTOR_CLOUD : BEAD_RADIUS_FACTOR;
 }
@@ -811,7 +828,7 @@ export class BeadGlobe implements GlobeAdapter {
     // never has anything to do on Jupiter — every natural ring stays intact.
     const regionFloor = cfg.planet === 'jupiter' ? 28 : 3;
     const regionShare = (n: number) => Math.max(regionFloor, Math.round((cfg.regionTarget * n) / totalBeadsAll));
-    const RADIUS_STEP = 0.03;
+    const RADIUS_STEP = LAYER_RADIUS_STEP;
 
     // Outer coarse layers first (index 0 = outermost, coarsest, biggest beads,
     // fewest colors), each one hiding the layer inside it until it's cleared
@@ -880,7 +897,7 @@ export class BeadGlobe implements GlobeAdapter {
     const outermostBodySpacing = numExtra > 0 ? this.shells[0].spacing : surfaceSpacing;
 
     if (cfg.cloudBeadCount > 0) {
-      const cloudRadius = 1.0 + RADIUS_STEP * numExtra + 0.06;
+      const cloudRadius = 1.0 + RADIUS_STEP * numExtra + CLOUD_RADIUS_EXTRA;
       const cloudSpacing = Math.sqrt((4 * Math.PI) / cfg.cloudBeadCount);
       const cloudDirsFull = fibonacciSphere(cfg.cloudBeadCount);
       const { start: cFullStart, list: cFullList } = buildNeighbors(cloudDirsFull, cloudSpacing * 1.6);
