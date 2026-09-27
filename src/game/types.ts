@@ -40,8 +40,13 @@ export interface GlobeAdapter {
   beadsOfColorInHemisphere(color: number, viewDir: Vec3): BeadRef[];
   /** All exposed beads within `halfWidth` (as |dot(dir, normal)|) of the great circle with pole `normal`. */
   beadsInBand(normal: Vec3, halfWidth: number): BeadRef[];
-  /** Marks the given beads popped (dead) and queues their FX events. */
-  pop(beads: BeadRef[]): void;
+  /**
+   * Marks the given beads popped (dead) and queues their FX events. May pop
+   * more than requested (a cascading "unsupported group" collapse in an
+   * outer layer, see `BeadGlobe.pop`); returns the total number of beads
+   * actually popped, including any such cascade.
+   */
+  pop(beads: BeadRef[]): number;
 
   // ---- Optional: alien-invasion "fire" mechanic (see `src/game/invasion.ts`). ----
   // A `GlobeAdapter` that doesn't implement these simply can't host fire

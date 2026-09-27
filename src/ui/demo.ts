@@ -7,6 +7,7 @@
  */
 import { GameUI } from './gameui';
 import { Tutorial } from './tutorial';
+import { S } from './strings';
 import type { PowerButtonState, PowerId, Settings } from './types';
 
 const root = document.getElementById('ui-root')!;
@@ -51,7 +52,7 @@ async function run() {
       break;
 
     case 'combo':
-      ui.showCombo(84);
+      ui.showCombo(S.megaPop(84));
       ui.showToast('+3 stardust');
       break;
 

@@ -32,10 +32,8 @@ export type SessionEvent =
   | { type: 'purchase'; power: PowerId; ok: boolean };
 
 export interface SessionInit {
-  /** Number of connected color regions at level start (`globe.countRegions()`). */
+  /** Number of connected color regions at level start (`globe.countRegions()`) — the true minimum number of shots needed to clear the level (one per region, playing optimally). */
   regions: number;
-  /** Probes = ceil(regions * shotSlack), per GDD §2. */
-  shotSlack: number;
   seed: number;
   stardust: number;
   /** Power unlock state + charges, mutated in place and readable back for persistence. */
@@ -56,7 +54,10 @@ export class GameSession {
   private readonly rng: () => number;
 
   constructor(private readonly globe: GlobeAdapter, opts: SessionInit) {
-    this.probesTotal = Math.max(1, Math.ceil(opts.regions * opts.shotSlack));
+    // Owner requirement: give the player exactly 2 more shots than the minimum required to clear
+    // the level, where the minimum is one shot per connected color region (playing optimally).
+    const EXTRA_SHOTS = 2;
+    this.probesTotal = Math.max(1, opts.regions) + EXTRA_SHOTS;
     this.probes = this.probesTotal;
     this.stardust = opts.stardust;
     this.powers = opts.powers;
@@ -109,11 +110,11 @@ export class GameSession {
 
     if (matches) {
       const region = this.globe.region(shellId, index);
-      this.globe.pop(region);
+      const poppedCount = this.globe.pop(region);
       this.prismArmed = false;
-      const stardustEarned = Math.max(1, Math.ceil(region.length / 12));
+      const stardustEarned = Math.max(1, Math.ceil(poppedCount / 12));
       this.stardust += stardustEarned;
-      events.push({ type: 'fire', result: 'hit', color, poppedCount: region.length, stardustEarned, combo: region.length >= 60 });
+      events.push({ type: 'fire', result: 'hit', color, poppedCount, stardustEarned, combo: poppedCount >= 60 });
     } else {
       events.push({ type: 'fire', result: 'miss', color: current });
     }
@@ -125,8 +126,8 @@ export class GameSession {
   meteor(point: Vec3, radius: number): SessionEvent[] {
     if (!this.consumeCharge('meteor')) return [];
     const beads = this.globe.beadsInRadius(point, radius);
-    this.globe.pop(beads);
-    return [{ type: 'power', power: 'meteor', poppedCount: beads.length }, ...this.checkOutcome()];
+    const poppedCount = this.globe.pop(beads);
+    return [{ type: 'power', power: 'meteor', poppedCount }, ...this.checkOutcome()];
   }
 
   /** Arms the next `fire()` to pop regardless of color match. */
@@ -139,15 +140,15 @@ export class GameSession {
   solarFlare(color: number, viewDir: Vec3): SessionEvent[] {
     if (!this.consumeCharge('solarFlare')) return [];
     const beads = this.globe.beadsOfColorInHemisphere(color, viewDir);
-    this.globe.pop(beads);
-    return [{ type: 'power', power: 'solarFlare', poppedCount: beads.length }, ...this.checkOutcome()];
+    const poppedCount = this.globe.pop(beads);
+    return [{ type: 'power', power: 'solarFlare', poppedCount }, ...this.checkOutcome()];
   }
 
   comet(normal: Vec3, halfWidth: number): SessionEvent[] {
     if (!this.consumeCharge('comet')) return [];
     const beads = this.globe.beadsInBand(normal, halfWidth);
-    this.globe.pop(beads);
-    return [{ type: 'power', power: 'comet', poppedCount: beads.length }, ...this.checkOutcome()];
+    const poppedCount = this.globe.pop(beads);
+    return [{ type: 'power', power: 'comet', poppedCount }, ...this.checkOutcome()];
   }
 
   private consumeCharge(power: PowerId): boolean {

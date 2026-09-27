@@ -66,6 +66,10 @@ export const S = {
   notEnoughStardust: pick('Not enough stardust', 'Yeterli yıldız tozu yok'),
   bonusPower: (name: string) => pick(`Bonus power: ${name}!`, `Bonus güç: ${name}!`),
   megaPop: (n: number) => pick(`MEGA POP ×${n}`, `MEGA POP ×${n}`),
+  /** Item #7: big-pop celebration text, tiered by how large the popped group was relative to the level's own average region size. */
+  popWow: pick('Wow!', 'Vay canına!'),
+  popGreat: pick('Great!', 'Harika!'),
+  popAmazing: pick('Amazing!', 'Muhteşem!'),
 
   // ------------------------------------------------------ level complete
   levelComplete: pick('Level Complete', 'Seviye Tamamlandı'),

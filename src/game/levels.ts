@@ -84,8 +84,6 @@ export interface LevelConfig {
    */
   regionTarget: number;
   seed: number;
-  /** Probes = ceil(regions * shotSlack). 1.5 early game -> 1.1 late game. */
-  shotSlack: number;
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -244,8 +242,6 @@ export function getLevel(level: number): LevelConfig {
   // little extra per additional layer so the shot budget accounts for all of them.
   const regionTarget = Math.min(45 + 6 * numExtra, Math.round(6 + 34 * progress) + 4 * numExtra);
 
-  const shotSlack = Math.max(1.1, 1.5 - 0.4 * progress);
-
   return {
     level: lv,
     planet,
@@ -264,6 +260,5 @@ export function getLevel(level: number): LevelConfig {
     spinReverseEnabled: lv >= SPIN_REVERSE_LEVEL,
     regionTarget,
     seed: lv * 7919 + 13,
-    shotSlack,
   };
 }

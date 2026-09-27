@@ -156,6 +156,8 @@ export class Game {
   private levelTotalBeads = 0;
   /** Which layer the HUD last reported, so a genuine advance (owner bug report: "the layered structure isn't there") gets a one-time toast instead of firing every `updateHud()`. 0 = not yet known this level. */
   private lastLayerShown = 0;
+  /** Average connected-region size for the level in progress (totalBeads / regions at level start) — the "reasonable large-group size" baseline the big-pop celebration (item #7) scales against. */
+  private avgRegionSize = 1;
 
   // alien invasion (see `src/game/invasion.ts`)
   private readonly aliens = new AlienInvasionRenderer();
@@ -485,9 +487,9 @@ export class Game {
     this.applyUnlocks(cfg.level);
     const powers = this.buildPowerStates();
     const regions = globe.countRegions();
+    this.avgRegionSize = this.levelTotalBeads / Math.max(1, regions);
     this.session = new GameSession(globe, {
       regions,
-      shotSlack: cfg.shotSlack,
       seed: cfg.seed,
       stardust: this.progress.stardust,
       powers,
@@ -1008,14 +1010,15 @@ export class Game {
         case 'fire':
           if (ev.result === 'hit') {
             this.burstDrainedPops(ev.poppedCount);
+            const tier = ev.color === FIRE_COLOR ? null : this.celebrationTier(ev.poppedCount);
             if (ev.color === FIRE_COLOR) {
               // Item #5: popping a fire patch reads as putting it out, not a normal pop.
               this.audio.play('extinguish', { intensity: THREE.MathUtils.clamp(ev.poppedCount / 20, 0.4, 1.3) });
             } else {
-              this.audio.play(ev.combo ? 'bigPop' : 'pop', { intensity: THREE.MathUtils.clamp(ev.poppedCount / 60, 0.2, 1.4) });
+              this.audio.play(tier ? 'bigPop' : 'pop', { intensity: THREE.MathUtils.clamp(ev.poppedCount / 60, 0.2, 1.4) });
             }
-            haptic(ev.combo ? 'medium' : 'light');
-            if (ev.combo) this.ui.showCombo(ev.poppedCount);
+            haptic(tier ? 'medium' : 'light');
+            if (tier) this.ui.showCombo(tier);
             if (this.pendingHitResolve) {
               const r = this.pendingHitResolve;
               this.pendingHitResolve = null;
@@ -1027,9 +1030,10 @@ export class Game {
             haptic('heavy');
           }
           break;
-        case 'power':
+        case 'power': {
           this.burstDrainedPops(ev.poppedCount);
-          if (ev.poppedCount >= 60) this.ui.showCombo(ev.poppedCount);
+          const powerTier = this.celebrationTier(ev.poppedCount);
+          if (powerTier) this.ui.showCombo(powerTier);
           if (this.pendingPowerUseResolve?.power === ev.power) {
             const r = this.pendingPowerUseResolve.resolve;
             this.pendingPowerUseResolve = null;
@@ -1041,6 +1045,7 @@ export class Game {
             r();
           }
           break;
+        }
         case 'swap':
           break;
         case 'purchase':
@@ -1074,14 +1079,44 @@ export class Game {
     const cap = 24;
     const step = Math.max(1, Math.floor(events.length / cap));
     const intensity = THREE.MathUtils.clamp(0.5 + poppedCount / 80, 0.5, 1.8);
+    // Item #4: popped pieces fall (gravity) and expand outward from the *hit's own centroid* —
+    // not the globe's center — so a shot on the globe's edge doesn't look like it's exploding out
+    // of the middle of the planet. `DebrisSystem.spawn` already adds the downward pull; this only
+    // has to supply the outward direction.
+    const worldPositions: THREE.Vector3[] = [];
+    for (const ev of events) worldPositions.push(this.globe.group.localToWorld(new THREE.Vector3(ev.position.x, ev.position.y, ev.position.z)));
+    const centroid = new THREE.Vector3();
+    for (const p of worldPositions) centroid.add(p);
+    centroid.divideScalar(worldPositions.length);
     const globeCenter = this.globe.group.localToWorld(new THREE.Vector3(0, 0, 0));
     for (let i = 0; i < events.length; i += step) {
       const ev = events[i];
-      const world = this.globe.group.localToWorld(new THREE.Vector3(ev.position.x, ev.position.y, ev.position.z));
+      const world = worldPositions[i];
       this.scene.burst(world, ev.color, intensity);
-      const outward = world.clone().sub(globeCenter).normalize();
+      const fromCentroid = world.clone().sub(centroid);
+      // A single-bead pop (or every popped bead sharing one exact position) leaves `fromCentroid`
+      // at ~zero length — fall back to radially outward from the globe's center in that case.
+      const outward = fromCentroid.lengthSq() > 1e-8 ? fromCentroid.normalize() : world.clone().sub(globeCenter).normalize();
       this.scene.spillBead(world, ev.color, outward, ev.radius);
     }
+  }
+
+  /**
+   * Item #7: which celebratory text (if any) a single shot's total popped-bead count earns,
+   * relative to `avgRegionSize` — this level's own typical region size — rather than a flat
+   * bead-count threshold, so "unusually large for this level" means the same thing on an early,
+   * few-big-regions level as on a late, many-small-regions one. A small absolute floor
+   * (`MIN_POP_FOR_CELEBRATION`) keeps a merely-average pop on a level with a tiny average (e.g.
+   * avgRegionSize ~1-2) from triggering a banner for a 4-5 bead pop.
+   */
+  private celebrationTier(poppedCount: number): string | null {
+    const MIN_POP_FOR_CELEBRATION = 6;
+    if (poppedCount < MIN_POP_FOR_CELEBRATION) return null;
+    const ratio = poppedCount / Math.max(1, this.avgRegionSize);
+    if (ratio >= 6) return S.popAmazing;
+    if (ratio >= 3.5) return S.popGreat;
+    if (ratio >= 2) return S.popWow;
+    return null;
   }
 
   // =============================================================== HUD sync

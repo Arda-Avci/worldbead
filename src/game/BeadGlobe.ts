@@ -49,6 +49,16 @@ interface Shell {
   coveringShellIndex?: number;
   /** covering[i] = bead indices on `coveringShellIndex`'s shell whose footprint covers this shell's bead i. */
   coveredBy?: Int32Array[];
+  /**
+   * Cascading collapse (owner bug report): index (into `BeadGlobe.shells`) of
+   * the shell this shell physically rests on/covers (the next shell in
+   * toward the surface), if any. Set on the *outer* side of a
+   * `coveringShellIndex` pair — the inverse direction from `coveringShellIndex`,
+   * which is set on the inner/covered shell instead.
+   */
+  coversBodyShellIndex?: number;
+  /** coversFootprint[i] = bead indices on `coversBodyShellIndex`'s shell that this bead `i` sits over. Used to detect "nothing left underneath" (see `findUnsupported`). */
+  coversFootprint?: Int32Array[];
   /** Item #19: clouds shell only — radians/sec the mesh drifts around its local Y axis, independent of the globe's own spin/drag. 0 = static. */
   driftSpeedRad?: number;
   /** Item #19: radians of drift accumulated since the last `coveredBy` recompute (reset each recompute). */
@@ -461,8 +471,67 @@ function mergeToRegionTarget(colorIdx: Int16Array, nbrStart: Int32Array, nbrList
   }
 }
 
-/** GDD §3 pipeline: sample -> k-means -> 2-pass majority smoothing -> merge down to the region target. */
-function paintFromTexture(dirs: Float32Array, img: ImageDataLike, k: number, regionTarget: number, seed: number, nbrStart: Int32Array, nbrList: Int32Array): { colorIdx: Int16Array; palette: number[]; minDeltaE: number } {
+/**
+ * Owner bug report: same-color regions of size 1/2/3/5 beads ("tiny
+ * fiddly patches") must not occur before level 100 — they read as
+ * frustrating pixel-hunting rather than a deliberate feature at that early
+ * stage. `regionTarget`/`mergeToRegionTarget` already merges the smallest
+ * region repeatedly until the *count* of regions is under budget, but that
+ * can still leave a handful of tiny regions once the count target is met
+ * (nothing forces the survivors to be above any particular size). This is
+ * a separate, level-gated floor: below level 100, any surviving region
+ * whose size is exactly one of these forbidden sizes gets merged into its
+ * dominant neighbor color, same merge rule as `mergeToRegionTarget`,
+ * repeated until none remain (a merge can occasionally produce a *new*
+ * region matching another forbidden size, hence the loop). Kept
+ * level-dependent (a single threshold here) rather than a special case for
+ * one level, per the "no speculative one-off" rule.
+ */
+const FORBIDDEN_TINY_SIZES = new Set([1, 2, 3, 5]);
+const TINY_REGION_FLOOR_LEVEL = 100;
+
+function enforceMinRegionSize(colorIdx: Int16Array, nbrStart: Int32Array, nbrList: Int32Array, k: number, level: number): void {
+  if (level >= TINY_REGION_FLOOR_LEVEL) return;
+  const n = colorIdx.length;
+  if (n === 0) return;
+  const hist = new Int32Array(k);
+  let guard = 0;
+  while (guard++ < n) {
+    const seen = new Uint8Array(n);
+    let target: number[] | null = null;
+    for (let i = 0; i < n && !target; i++) {
+      if (seen[i]) continue;
+      const color = colorIdx[i];
+      const comp: number[] = [i];
+      seen[i] = 1;
+      let qi = 0;
+      while (qi < comp.length) {
+        const cur = comp[qi++];
+        for (let e = nbrStart[cur]; e < nbrStart[cur + 1]; e++) {
+          const j = nbrList[e];
+          if (!seen[j] && colorIdx[j] === color) { seen[j] = 1; comp.push(j); }
+        }
+      }
+      if (FORBIDDEN_TINY_SIZES.has(comp.length)) target = comp;
+    }
+    if (!target) return; // nothing left to fix
+    const color = colorIdx[target[0]];
+    hist.fill(0);
+    for (const ci of target) {
+      for (let e = nbrStart[ci]; e < nbrStart[ci + 1]; e++) {
+        const nc = colorIdx[nbrList[e]];
+        if (nc !== color) hist[nc]++;
+      }
+    }
+    let best = -1, bestCount = 0;
+    for (let c = 0; c < k; c++) if (hist[c] > bestCount) { bestCount = hist[c]; best = c; }
+    if (best < 0) return; // isolated single-color shell — nothing to merge into
+    for (const ci of target) colorIdx[ci] = best;
+  }
+}
+
+/** GDD §3 pipeline: sample -> k-means -> 2-pass majority smoothing -> merge down to the region target -> (below level 100) merge away any forbidden tiny region. */
+function paintFromTexture(dirs: Float32Array, img: ImageDataLike, k: number, regionTarget: number, seed: number, nbrStart: Int32Array, nbrList: Int32Array, level: number): { colorIdx: Int16Array; palette: number[]; minDeltaE: number } {
   const n = dirs.length / 3;
   const rgb = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
@@ -473,7 +542,62 @@ function paintFromTexture(dirs: Float32Array, img: ImageDataLike, k: number, reg
   const { assign, palette, minDeltaE } = kmeansQuantize(rgb, n, k, seed);
   const smoothed = majoritySmooth(assign, nbrStart, nbrList, palette.length, 2);
   mergeToRegionTarget(smoothed, nbrStart, nbrList, palette.length, regionTarget);
+  enforceMinRegionSize(smoothed, nbrStart, nbrList, palette.length, level);
   return { colorIdx: smoothed, palette, minDeltaE };
+}
+
+/**
+ * Owner bug report: outer layers must read visibly paler/more washed-out
+ * than the layer just inside them, and adjacent layers must never look
+ * near-identical (same hue/lightness band twice in a row). `outerness` is
+ * 0 for the innermost shell (surface) growing to 1 for the outermost body
+ * layer; each step lightens and desaturates the palette (same Lab
+ * lightness/chroma machinery as `readablePalette`, hue untouched so it
+ * still matches the real texture). `prevAvgLab` is the just-inside layer's
+ * own (unweighted) average Lab color — if this layer's average still
+ * lands within `MIN_LAYER_DELTA_E` of it, every entry is pushed further
+ * toward lighter until the two layers are clearly separable, reusing the
+ * same ΔE-distance idea `readablePalette`'s separation pass uses.
+ */
+const MIN_LAYER_DELTA_E = 16;
+
+function fadeOuterPalette(paletteHex: number[], outerness: number, prevAvgLab: [number, number, number] | null): { palette: number[]; avgLab: [number, number, number] } {
+  const FADE_LIGHTNESS = 24; // max lightness lift at outerness = 1
+  const FADE_CHROMA = 0.6; // max chroma reduction fraction at outerness = 1
+  const labs: [number, number, number][] = paletteHex.map((hex) => {
+    const r = ((hex >> 16) & 255) / 255, g = ((hex >> 8) & 255) / 255, b = (hex & 255) / 255;
+    return rgbToLab(r, g, b);
+  });
+  for (const lab of labs) {
+    lab[0] = Math.min(92, lab[0] + FADE_LIGHTNESS * outerness);
+    const chroma = Math.hypot(lab[1], lab[2]);
+    if (chroma > 0.5) {
+      const scale = 1 - FADE_CHROMA * outerness;
+      lab[1] *= scale;
+      lab[2] *= scale;
+    }
+  }
+  const avg = (idx: 0 | 1 | 2) => labs.reduce((sum, l) => sum + l[idx], 0) / labs.length;
+  let avgLab: [number, number, number] = [avg(0), avg(1), avg(2)];
+  if (prevAvgLab) {
+    const dE = () => Math.hypot(avgLab[0] - prevAvgLab![0], avgLab[1] - prevAvgLab![1], avgLab[2] - prevAvgLab![2]);
+    const d = dE();
+    if (d < MIN_LAYER_DELTA_E) {
+      const push = MIN_LAYER_DELTA_E - d + 1;
+      // Push AWAY from the previous (more outer) layer's own average lightness, in whichever
+      // direction increases the gap — pushing blindly lighter can instead move a naturally-darker
+      // inner layer's lightness *toward* a lighter outer neighbor and shrink the gap.
+      const direction = avgLab[0] >= prevAvgLab[0] ? 1 : -1;
+      for (const lab of labs) lab[0] = Math.max(8, Math.min(98, lab[0] + direction * push));
+      avgLab = [Math.max(8, Math.min(98, avgLab[0] + direction * push)), avgLab[1], avgLab[2]];
+    }
+  }
+  const toHex = ([L, a, b]: [number, number, number]): number => {
+    const [r, g, bl] = labToRgb(L, a, b);
+    const c = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255)));
+    return (c(r) << 16) | (c(g) << 8) | c(bl);
+  };
+  return { palette: labs.map(toHex), avgLab };
 }
 
 /** Resets connected true-clusters smaller than `minSize` back to false. */
@@ -579,7 +703,7 @@ function buildVenusCloudPaint(dirs: Float32Array, seed: number): Int16Array {
  * the outermost layer, each outer layer over the next one in, down to the
  * real surface).
  */
-function buildCoveredBy(coveringDirs: Float32Array, coveringSpacing: number, coveringFactor: number, bodyDirs: Float32Array, bodySpacing: number, bodyFactor: number): Int32Array[] {
+function buildCoveredBy(coveringDirs: Float32Array, coveringSpacing: number, coveringFactor: number, bodyDirs: Float32Array, bodySpacing: number, bodyFactor: number): { coveredBy: Int32Array[]; footprint: Int32Array[] } {
   const forward = computeFootprint(coveringDirs, coveringSpacing, coveringFactor, bodyDirs, bodySpacing, bodyFactor); // forward[coveringIdx] -> body indices it covers
   const bodyCount = bodyDirs.length / 3;
   const buckets: number[][] = new Array(bodyCount);
@@ -587,7 +711,7 @@ function buildCoveredBy(coveringDirs: Float32Array, coveringSpacing: number, cov
   for (let ci = 0; ci < forward.length; ci++) {
     for (const bi of forward[ci]) buckets[bi].push(ci);
   }
-  return buckets.map((arr) => Int32Array.from(arr));
+  return { coveredBy: buckets.map((arr) => Int32Array.from(arr)), footprint: forward };
 }
 
 /** Rotates a flat (x,y,z)*n direction array around the world Y axis by `angle` radians. */
@@ -697,19 +821,32 @@ export class BeadGlobe implements GlobeAdapter {
     let prevSpacing = 0;
     let prevShellIndex: number | null = null;
     const paletteMinDeltaEs: number[] = [];
+    // Item #2: outer layers must read progressively paler than inner ones, and no two adjacent
+    // layers may land on near-identical average colors — `outerness` walks from 1 (outermost
+    // extra layer) down to 0 (surface); `prevAvgLab` chains the separation check outer-to-inner.
+    const totalDepth = numExtra; // clouds are faded separately via material fluffiness, not palette
+    let prevLayerAvgLab: [number, number, number] | null = null;
     for (let d = 0; d < numExtra; d++) {
       const layerCfg = cfg.extraLayers[d];
-      const radius = 1.0 + RADIUS_STEP * (numExtra - d);
+      const distFromSurface = numExtra - d;
+      const radius = 1.0 + RADIUS_STEP * distFromSurface;
       const dirs = fibonacciSphere(layerCfg.beadCount);
       const spacing = Math.sqrt((4 * Math.PI) / layerCfg.beadCount);
       const { start, list } = buildNeighbors(dirs, spacing * 1.45);
       const seed = cfg.seed + d * 101 + 3;
-      const { colorIdx, palette, minDeltaE } = paintFromTexture(dirs, surfaceImg, layerCfg.k, regionShare(layerCfg.beadCount), seed, start, list);
+      const { colorIdx, palette: rawPalette, minDeltaE } = paintFromTexture(dirs, surfaceImg, layerCfg.k, regionShare(layerCfg.beadCount), seed, start, list, cfg.level);
       paletteMinDeltaEs.push(minDeltaE);
+      const outerness = totalDepth > 0 ? distFromSurface / totalDepth : 0;
+      const { palette, avgLab } = fadeOuterPalette(rawPalette, outerness, prevLayerAvgLab);
+      prevLayerAvgLab = avgLab;
       const shell = this.makeShell('layer', dirs, start, list, colorIdx, palette, radius, layerCfg.beadCount, seed);
       if (prevDirs) {
         shell.coveringShellIndex = prevShellIndex!;
-        shell.coveredBy = buildCoveredBy(prevDirs, prevSpacing, BEAD_RADIUS_FACTOR, dirs, spacing, BEAD_RADIUS_FACTOR);
+        const { coveredBy, footprint } = buildCoveredBy(prevDirs, prevSpacing, BEAD_RADIUS_FACTOR, dirs, spacing, BEAD_RADIUS_FACTOR);
+        shell.coveredBy = coveredBy;
+        // The previous (more outer) shell in this loop physically rests on this one.
+        this.shells[prevShellIndex!].coversBodyShellIndex = this.shells.length;
+        this.shells[prevShellIndex!].coversFootprint = footprint;
       }
       this.shells.push(shell);
       prevDirs = dirs;
@@ -721,16 +858,21 @@ export class BeadGlobe implements GlobeAdapter {
     const surfaceDirs = fibonacciSphere(cfg.beadCount);
     const surfaceSpacing = Math.sqrt((4 * Math.PI) / cfg.beadCount);
     const { start: sStart, list: sList } = buildNeighbors(surfaceDirs, surfaceSpacing * 1.45);
-    const { colorIdx: sColorIdx, palette: sPalette, minDeltaE: sMinDeltaE } = paintFromTexture(surfaceDirs, surfaceImg, cfg.k, regionShare(cfg.beadCount), cfg.seed, sStart, sList);
+    const { colorIdx: sColorIdx, palette: sRawPalette, minDeltaE: sMinDeltaE } = paintFromTexture(surfaceDirs, surfaceImg, cfg.k, regionShare(cfg.beadCount), cfg.seed, sStart, sList, cfg.level);
     paletteMinDeltaEs.push(sMinDeltaE);
     if (import.meta.env.DEV) {
       // eslint-disable-next-line no-console
       console.debug(`[BeadGlobe] level ${cfg.level} palette minDeltaE (surface+layers): ${Math.min(...paletteMinDeltaEs).toFixed(1)}`);
     }
+    // Surface is innermost (outerness 0): only the adjacent-layer separation check applies, no fade.
+    const { palette: sPalette } = fadeOuterPalette(sRawPalette, 0, prevLayerAvgLab);
     const surface = this.makeShell('surface', surfaceDirs, sStart, sList, sColorIdx, sPalette, 1.0, cfg.beadCount, cfg.seed);
     if (prevDirs) {
       surface.coveringShellIndex = prevShellIndex!;
-      surface.coveredBy = buildCoveredBy(prevDirs, prevSpacing, BEAD_RADIUS_FACTOR, surfaceDirs, surfaceSpacing, BEAD_RADIUS_FACTOR);
+      const { coveredBy, footprint } = buildCoveredBy(prevDirs, prevSpacing, BEAD_RADIUS_FACTOR, surfaceDirs, surfaceSpacing, BEAD_RADIUS_FACTOR);
+      surface.coveredBy = coveredBy;
+      this.shells[prevShellIndex!].coversBodyShellIndex = this.shells.length;
+      this.shells[prevShellIndex!].coversFootprint = footprint;
     }
     this.shells.push(surface);
     const outermostBodyIndex = numExtra > 0 ? 0 : this.shells.length - 1;
@@ -807,7 +949,10 @@ export class BeadGlobe implements GlobeAdapter {
 
       const outermostBody = this.shells[outermostBodyIndex];
       outermostBody.coveringShellIndex = cloudShellIndex;
-      outermostBody.coveredBy = buildCoveredBy(cloudDirs, cloudSpacing, BEAD_RADIUS_FACTOR_CLOUD, outermostBodyDirs, outermostBodySpacing, BEAD_RADIUS_FACTOR);
+      const { coveredBy: cloudCoveredBy, footprint: cloudFootprint } = buildCoveredBy(cloudDirs, cloudSpacing, BEAD_RADIUS_FACTOR_CLOUD, outermostBodyDirs, outermostBodySpacing, BEAD_RADIUS_FACTOR);
+      outermostBody.coveredBy = cloudCoveredBy;
+      clouds.coversBodyShellIndex = outermostBodyIndex;
+      clouds.coversFootprint = cloudFootprint;
       this.cloudCoverRecalc = { cloudDirs, cloudSpacing, bodyShellIndex: outermostBodyIndex, bodyDirs: outermostBodyDirs, bodySpacing: outermostBodySpacing };
     }
 
@@ -1084,8 +1229,32 @@ export class BeadGlobe implements GlobeAdapter {
     return out;
   }
 
-  pop(beads: BeadRef[]): void {
+  /**
+   * Pops the given beads, then cascades (item #5, "unsupported groups fall
+   * on their own"): after any pop, any bead in an outer shell whose entire
+   * footprint on the shell it physically rests on has just gone fully dead
+   * is popped too — repeated until nothing new becomes unsupported. Returns
+   * the total number of beads popped (the requested beads plus any cascade),
+   * so callers can score/react to what actually happened, not just what was
+   * directly targeted.
+   */
+  pop(beads: BeadRef[]): number {
+    let total = this.popInternal(beads);
+    let frontier = beads;
+    let guard = 0;
+    while (frontier.length > 0 && guard++ < this.shells.length + 2) {
+      const unsupported = this.findUnsupported(frontier);
+      if (unsupported.length === 0) break;
+      total += this.popInternal(unsupported);
+      frontier = unsupported;
+    }
+    return total;
+  }
+
+  /** Marks the given beads dead and queues their FX events; skips any already-dead. Returns the count actually popped. */
+  private popInternal(beads: BeadRef[]): number {
     let i = 0;
+    let popped = 0;
     for (const b of beads) {
       const shell = this.shells[b.shellId];
       if (!shell.alive[b.index]) continue;
@@ -1095,7 +1264,41 @@ export class BeadGlobe implements GlobeAdapter {
       shell.alive[b.index] = 0;
       this.popAnims.push({ shell, index: b.index, t0: this.animClock + Math.min(i, 40) * 0.016, dur: 0.2 });
       i++;
+      popped++;
     }
+    return popped;
+  }
+
+  /**
+   * Every alive bead, on any shell that physically rests on one of the
+   * `justPopped` beads' shells, whose entire covering footprint on that
+   * shell has just gone fully dead — i.e. it has nothing left underneath it
+   * (see `Shell.coversFootprint`). A bead with an empty/unknown footprint is
+   * left alone (never treated as floating) rather than risk popping beads
+   * this coarse geometric check can't actually justify.
+   */
+  private findUnsupported(justPopped: BeadRef[]): BeadRef[] {
+    const affectedShellIds = new Set<number>();
+    for (const b of justPopped) affectedShellIds.add(b.shellId);
+    const out: BeadRef[] = [];
+    for (let shellId = 0; shellId < this.shells.length; shellId++) {
+      const shell = this.shells[shellId];
+      if (shell.coversBodyShellIndex === undefined || !shell.coversFootprint) continue;
+      if (!affectedShellIds.has(shell.coversBodyShellIndex)) continue;
+      const body = this.shells[shell.coversBodyShellIndex];
+      const footprint = shell.coversFootprint;
+      for (let i = 0; i < shell.count; i++) {
+        if (!shell.alive[i]) continue;
+        const fp = footprint[i];
+        if (!fp || fp.length === 0) continue;
+        let anyAlive = false;
+        for (let k = 0; k < fp.length; k++) {
+          if (body.alive[fp[k]]) { anyAlive = true; break; }
+        }
+        if (!anyAlive) out.push({ shellId, index: i });
+      }
+    }
+    return out;
   }
 
   /** Popped bead positions + colors since the last call, for FX. */
@@ -1250,27 +1453,39 @@ export class BeadGlobe implements GlobeAdapter {
     }
     const originPoint = hits.length > 0 ? hits[0].point : fallbackPoint;
     if (!originPoint) return null;
-    const cloudShellId = this.shells.findIndex((s) => s.kind === 'clouds');
-    if (cloudShellId === -1) return null;
-    const cloud = this.shells[cloudShellId];
     const worldLocal = this.group.worldToLocal(originPoint.clone());
     if (worldLocal.lengthSq() < 1e-8) return null;
     worldLocal.normalize();
-    // The clouds mesh may be drifting (item #19) — undo its rotation so the query
-    // direction lines up with the shell's own raw `dirs` array before scanning.
-    const local = this.toShellLocal(cloud, { x: worldLocal.x, y: worldLocal.y, z: worldLocal.z });
-    let best = -1;
-    let bestDot = -1;
-    for (let i = 0; i < cloud.count; i++) {
-      if (!cloud.alive[i]) continue;
-      const dot = cloud.dirs[i * 3] * local.x + cloud.dirs[i * 3 + 1] * local.y + cloud.dirs[i * 3 + 2] * local.z;
-      if (dot > bestDot) { bestDot = dot; best = i; }
+    // Owner bug report (round 2): a grazing/limb tap can thread every bead instance's gaps at
+    // once, on ANY shell — not just clouds. The previous version only snapped to the nearest
+    // cloud bead here, so a ground/surface/layer bead at the limb stayed unhittable from some
+    // angles even when a bead of the tapped color was clearly on screen there. This now scans
+    // every shell for its own nearest alive, exposed bead within that shell's own real angular
+    // bead size (matching each shell's own neighbor-graph tolerance), and — when more than one
+    // shell has a candidate within tolerance at the same screen point — prefers the one with the
+    // larger world radius, i.e. whichever shell is actually rendered on top there.
+    let best: { shellId: number; index: number; radius: number } | null = null;
+    for (let shellId = 0; shellId < this.shells.length; shellId++) {
+      const shell = this.shells[shellId];
+      // The shell may be drifting (item #19) — undo its own rotation so the query direction
+      // lines up with its raw `dirs` array before scanning.
+      const local = this.toShellLocal(shell, { x: worldLocal.x, y: worldLocal.y, z: worldLocal.z });
+      let bi = -1;
+      let bestDot = -1;
+      for (let i = 0; i < shell.count; i++) {
+        if (!shell.alive[i] || this.isCovered(shell, i)) continue;
+        const dot = shell.dirs[i * 3] * local.x + shell.dirs[i * 3 + 1] * local.y + shell.dirs[i * 3 + 2] * local.z;
+        if (dot > bestDot) { bestDot = dot; bi = i; }
+      }
+      if (bi < 0) continue;
+      const toleranceFactor = shell.kind === 'clouds' ? 1.6 : 1.45;
+      const tolerance = Math.cos(shell.spacing * toleranceFactor);
+      if (bestDot > tolerance && (!best || shell.radius > best.radius)) {
+        best = { shellId, index: bi, radius: shell.radius };
+      }
     }
-    const tolerance = Math.cos(cloud.spacing * 1.6);
-    if (best >= 0 && bestDot > tolerance) {
-      return { shellId: cloudShellId, index: best, point: hits[0].point.clone() };
-    }
-    return null;
+    if (!best) return null;
+    return { shellId: best.shellId, index: best.index, point: originPoint.clone() };
   }
 
   beadRadius(shellId = 0): number {
@@ -1364,7 +1579,9 @@ export class BeadGlobe implements GlobeAdapter {
     const { cloudSpacing, bodyShellIndex, bodyDirs, bodySpacing } = this.cloudCoverRecalc;
     const rotatedCloudDirs = rotateDirsY(clouds.dirs, clouds.mesh.rotation.y);
     const body = this.shells[bodyShellIndex];
-    body.coveredBy = buildCoveredBy(rotatedCloudDirs, cloudSpacing, BEAD_RADIUS_FACTOR_CLOUD, bodyDirs, bodySpacing, BEAD_RADIUS_FACTOR);
+    const { coveredBy, footprint } = buildCoveredBy(rotatedCloudDirs, cloudSpacing, BEAD_RADIUS_FACTOR_CLOUD, bodyDirs, bodySpacing, BEAD_RADIUS_FACTOR);
+    body.coveredBy = coveredBy;
+    clouds.coversFootprint = footprint;
   }
 
   /** Transforms a group-local point/direction into `shell`'s own local space, undoing its drift rotation (item #19; identity for non-drifting shells). */

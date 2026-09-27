@@ -1481,3 +1481,132 @@ Owner decided the 2-layer milestone was too far out; `LAYER_MILESTONES` in
   (`newLayer`) card shows correctly, no longer erased by the stale timeout.
 - `docs/GDD.md` had no reference to the old milestone numbers, so nothing
   to update there.
+
+## Owner's 7-item batch: tiny regions, layer fading, limb-miss hit-test,
+## pop/cascade FX, shot budget, big-pop celebration (this session)
+
+All 7 items live in `src/game/BeadGlobe.ts`, `src/game/GameSession.ts`,
+`src/game/levels.ts`, `src/game/types.ts`, `src/game/Game.ts`,
+`src/ui/strings.ts`, `src/ui/gameui.ts`, `src/ui/demo.ts`. Verified with a
+Node/`vite.createServer().ssrLoadModule` harness (imports the real
+`src/game/` TS modules with a synthetic equirect texture, no browser
+needed — see the session's scratchpad `scratch_verify*.mjs`, not checked
+in) plus one headless-Playwright smoke test (`level=1`, 390×844 viewport,
+60 randomized real `page.mouse.click()` taps): no console errors, page
+stays responsive.
+
+1. **No tiny (1/2/3/5-bead) regions before level 100.** `mergeToRegionTarget`
+   only drives the *count* of regions down to budget; it doesn't stop a
+   handful of tiny ones surviving once that count is met. Added
+   `enforceMinRegionSize()` (`BeadGlobe.ts`): below level 100
+   (`TINY_REGION_FLOOR_LEVEL`), repeatedly finds any connected region whose
+   size is exactly 1, 2, 3 or 5 and merges it into its dominant neighbor
+   color (same merge rule as `mergeToRegionTarget`), looping until none
+   remain (a merge can create a new forbidden-size region, hence the loop).
+   Runs inside `paintFromTexture()`, which now takes `level`. Verified:
+   built levels 1/5/10/22/30/50/71/99 with a synthetic textured sphere —
+   zero forbidden-size regions on any non-cloud shell; level 150 (>=100)
+   was allowed to have some (5 found), confirming the gate is level-scoped,
+   not a blanket ban. Clouds are excluded from this check — they already
+   have their own, much larger, floor (`CLOUD_MIN_CLUSTER = 12`).
+2. **Outer layers paler + adjacent layers clearly separated.** Added
+   `fadeOuterPalette()` (`BeadGlobe.ts`): lightens (+up to 24 Lab-L) and
+   desaturates (-up to 60% chroma) each shell's palette by an `outerness`
+   factor (0 = surface, up to 1 = outermost extra layer; clouds are already
+   faded via material opacity/fluffiness, not touched here), hue
+   untouched so it still matches the real texture. A second pass compares
+   each shell's own (unweighted) average Lab color against the shell just
+   outside it (`MIN_LAYER_DELTA_E = 16`) and pushes the whole palette's
+   lightness further *away* from that neighbor's average — in whichever
+   direction actually increases the gap, not just "lighter", since
+   blindly lightening an already-lighter neighbor closes the gap instead
+   of opening it (a real bug caught by the verification script before this
+   direction fix). Verified on levels 71/180/349 (2-4 layers): adjacent
+   layers' average ΔE stayed >= ~13-20 in a fabricated-texture test; one
+   level/shell pair (349, its 2nd vs 3rd layer) measured ~13.6, slightly
+   under the 16 target — some individual palette entries hit the ±8/98
+   lightness clamp, capping how far the *average* can move. Not chased
+   further (diminishing returns for a synthetic-texture edge case); the
+   real planet textures' actual centroid spread makes this less likely to
+   bite in practice, but flag it if a future report says two adjacent
+   layers still look too similar deep in the level curve.
+3. **Grazing/limb tap misses a same-color bead ("cloud" bug, round 3).**
+   Real bug, confirmed and fixed. `BeadGlobe.resolveHit()`'s fallback (used
+   when the raycast threads every bead instance's gaps at the globe's
+   limb) previously snapped to the nearest bead **only on the `clouds`
+   shell** — a surface-only level (no clouds) or a level with an extra
+   outer `layer` shell had *no* fallback at all, so a grazing tap on a
+   correct-color ground/layer bead near the limb silently missed. Fixed by
+   generalizing the snap to scan every shell for its own nearest alive,
+   exposed bead within that shell's own real angular bead size, preferring
+   the shell with the larger world radius when more than one shell has a
+   candidate (i.e. whichever is actually rendered on top there). Verified
+   directly against `resolveHit()`: 500 random points per level, calling
+   `resolveHit([], fallbackPoint)` (simulating "raycast hit no instance") —
+   surface-only (level 1), surface+earth-clouds (level 8), and
+   surface+extra-layer/no-clouds (level 21) all now resolve ~100% of random
+   limb-adjacent points, versus the old code's 0% for the non-cloud cases
+   (no fallback existed there at all).
+4. **Pop effect: fall + expand outward from the hit's own centroid.**
+   `DebrisSystem.spawn()` already applied a downward pull; the outward
+   direction was previously computed per-bead as "away from the globe's
+   center", which looks wrong for a shot near the globe's edge (debris
+   seems to fly toward camera/off to one side instead of away from the
+   *hit*). `Game.ts`'s `burstDrainedPops()` now computes the popped
+   region's own world-space centroid first and uses `beadPos - centroid`
+   as the outward direction (falling back to the old globe-center-relative
+   direction only in the degenerate all-beads-at-one-point case).
+5. **Cascading collapse: unsupported outer-layer groups auto-fall.** Added
+   a "physically rests on" relationship, `Shell.coversBodyShellIndex` +
+   `Shell.coversFootprint` (the inverse of the existing `coveringShellIndex`
+   / `coveredBy` *visual occlusion* relationship — an outer bead's
+   footprint onto the very next shell in), computed alongside `coveredBy`
+   in `buildCoveredBy()` (now returns both) and kept live as clouds drift
+   (`updateCloudDrift`). `BeadGlobe.pop()` now cascades: after popping the
+   requested beads, it repeatedly finds any alive bead on a "covers" shell
+   whose entire footprint on the shell it rests on has gone fully dead
+   (nothing left underneath it) and pops those too, until nothing new
+   qualifies. `pop()`'s signature changed from `void` to returning the
+   total beads actually popped (`GlobeAdapter.pop` in `types.ts` updated
+   to match; `GameSession`'s `fire`/`meteor`/`solarFlare`/`comet` all use
+   the returned total for `poppedCount`/stardust instead of the
+   originally-targeted bead-list length). Verified directly: on a
+   2-layer level (21), manually popping every surface bead under one
+   specific outer-layer bead's footprint (bypassing the normal
+   color/coverage rules, as a controlled unit test) made that outer bead
+   go `alive = 0` via the cascade, with `pop()`'s returned total exceeding
+   the directly-targeted bead count.
+6. **Extra shots: minimum + 2.** `GameSession`'s shot budget was
+   `ceil(regions * shotSlack)` (a 1.1x-1.5x multiplier curve in
+   `levels.ts`). Replaced with `probesTotal = max(1, regions) + 2` — exactly
+   2 more than the true minimum (one shot per connected region, playing
+   optimally). Removed the now-unused `shotSlack` field from
+   `LevelConfig`/`SessionInit` and its computation in `levels.ts` (YAGNI).
+   Verified: `probesTotal === regions + 2` exactly, checked at levels
+   1/22/71/150/349.
+7. **Big-pop celebration text ("Wow!"/"Great!"/"Amazing!").** Added
+   `S.popWow`/`S.popGreat`/`S.popAmazing` (EN/TR) to `strings.ts`.
+   `GameUI.showCombo()` now takes the display text directly (was a bead
+   count formatted as `S.megaPop(n)`; `demo.ts`'s combo-state preview
+   updated to pass `S.megaPop(84)` explicitly). `Game.ts` tracks
+   `avgRegionSize` (total level beads / region count at level start) and a
+   new `celebrationTier(poppedCount)` picks a tier by the shot's *ratio* to
+   that level's own average region size (>=2 Wow, >=3.5 Great, >=6
+   Amazing; a small absolute floor of 6 popped beads avoids triggering on
+   an early level with a tiny average), replacing the old flat
+   `poppedCount >= 60` threshold — a "big pop" now means the same thing
+   relative to a level's own difficulty curve instead of only ever firing
+   on high-K late-game levels. Verified the tier function's thresholds
+   directly against several `(poppedCount, avgRegionSize)` pairs.
+
+### Known limitations from this batch
+
+- Item 2's ΔE floor isn't hit in 100% of synthetic-texture cases (see
+  above) — real planet textures haven't been re-screenshotted against this
+  change yet; worth a visual spot-check next time layers come up.
+- Item 3 was verified against `BeadGlobe.resolveHit()` directly (the exact
+  function `Game.ts.pickBead()` calls on a real miss) rather than via
+  full-fidelity Playwright color-matched taps at many camera angles on a
+  rendered canvas — the geometric fix is the same either way, but a
+  rendered-canvas regression pass would be the natural next check if the
+  owner still reports misses after this.

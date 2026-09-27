@@ -267,8 +267,9 @@ export class GameUI {
     this.toastTimer = window.setTimeout(() => this.toastEl.classList.remove('wb-show'), ms);
   }
 
-  showCombo(count: number): void {
-    this.comboEl.textContent = S.megaPop(count);
+  /** `text` is a celebratory string (see `strings.ts`'s `popWow`/`popGreat`/`popAmazing` — item #7). */
+  showCombo(text: string): void {
+    this.comboEl.textContent = text;
     this.comboEl.classList.remove('wb-show');
     // Force reflow so the animation restarts on repeated combos.
     void this.comboEl.offsetWidth;
