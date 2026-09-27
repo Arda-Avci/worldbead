@@ -1397,3 +1397,87 @@ without an error message explaining why.
   `GITHUB_RUN_NUMBER`/`GITHUB_SHA` (both workflows run in GitHub Actions,
   which sets these automatically), falling back to `"dev"` for local
   builds; declared in `src/global.d.ts`.
+
+## Unified version scheme for web + APK (this session)
+
+The pages.yml and android.yml workflows each have their own
+`GITHUB_RUN_NUMBER`, so the web build and the APK build from the same
+commit used to show different build numbers — the owner couldn't match a
+web bug report to an APK build. Replaced the run-number-based scheme with
+one derived from git itself, computed identically in both places:
+`v1.0.<N>` where `N = git rev-list --count HEAD` (number of commits on
+main).
+
+- `vite.config.ts` now shells out to `git rev-list --count HEAD` (via
+  `execSync`, falling back to `'dev'` if it fails) instead of reading
+  `GITHUB_RUN_NUMBER`. `__BUILD_LABEL__` is now `v1.0.N (sha7)` (or plain
+  `'dev'` locally when git isn't available).
+- `android/app/build.gradle` computes the same commit count via a Groovy
+  closure that shells out to the same `git rev-list --count HEAD` command
+  (fallback `1`), and uses it for both `versionCode` and `versionName`
+  (`"1.0.${commitCount}"`).
+- Both `.github/workflows/pages.yml` and `.github/workflows/android.yml`
+  now checkout with `fetch-depth: 0` — a shallow clone would make
+  `git rev-list --count` return a wrong (too-small) number.
+- The build label is now legible instead of near-invisible: 12px / 0.7
+  opacity on the title screen (`.wb-build-label`), and also shown at the
+  bottom of the in-game settings panel (`.wb-version-label` in
+  `src/ui/gameui.ts`'s `openSettings()`), so the owner can check the
+  version without restarting to the title screen.
+- `.github/workflows/android.yml`'s "Publish latest debug APK" step now
+  computes the same `N`/short SHA and runs `gh release edit latest-debug`
+  on every run so the rolling `latest-debug` GitHub release's title
+  (`WorldBead v1.0.N (latest debug)`) and notes (version, commit, UTC
+  build date) always reflect the build actually attached to it.
+- Verified locally: `npm run build` succeeds; `dist/assets/index-*.js`
+  contains `v1.0.17 (dev)` for the local commit count of 17 (no
+  `GITHUB_SHA` locally, so the sha falls back to `dev`). Gradle wasn't run
+  (no local Android SDK, per project rules) — the Groovy closure was
+  checked by hand for correctness only.
+
+## Second bead layer moved to level 21 (owner decision, 2026-09-27)
+
+Owner decided the 2-layer milestone was too far out; `LAYER_MILESTONES` in
+`src/game/levels.ts` changed from `[45, 120, 260]` to `[21, 70, 180]`
+(levels where total layer count becomes 2, 3, 4 — still hard-capped at 4).
+
+- **Collision found and fixed**: level 21 is also a planet-change level
+  (`CYCLE`/`SLOT_LENGTH` puts a slot boundary at every `level ≡ 1 mod 10`,
+  so level 21 starts Mars's slot) — the *first* time a layer milestone has
+  ever landed on the same level as a planet change. `Game.ts`'s
+  `runTutorialsForLevel` used to check `newPlanet` and `newLayer` as an
+  `if`/`else if` chain, so on a colliding level only the `newPlanet` card
+  would ever show and the `newLayer` card/tutorial would be silently
+  skipped forever (its `seenTutorials` key never gets added, but the
+  `else if` means it's never re-checked either — a real bug, not just a
+  UX gap). Changed both checks to independent `if`s (still sequential,
+  each `await`ed) so both fire, one after another.
+- **Second, deeper bug found while verifying with Playwright**: even with
+  both dynamic cards firing in sequence, the second card (`newLayer`) was
+  being wiped out ~300ms after it appeared. Root cause: `GameUI`'s
+  `closeScrim()` clears `scrimEl.innerHTML` in a `setTimeout(…, 300)` after
+  a card's primary button is clicked; when a *second* card is shown
+  immediately after (as now happens at level 21), `showCard()` replaces
+  `scrimEl`'s content synchronously, but the *first* card's still-pending
+  300ms timeout fires shortly after and unconditionally clears
+  `scrimEl.innerHTML` again — deleting the second card's just-inserted DOM.
+  This only ever manifests when two dynamic cards fire back-to-back on the
+  same level, which was impossible before this change (no existing
+  milestone coincided with a planet-change level). Fixed by tracking the
+  pending clear as `scrimClearTimer` and cancelling it in `showCard()`
+  before inserting new content (`src/ui/gameui.ts`).
+- Bead-radius/count curves in `levels.ts` were re-checked at the new
+  milestones — verified via `npx tsx` that inner layers stay strictly
+  finer (higher bead count / smaller radius) than outer layers at levels
+  21, 70 and 180, and that total bead counts stay well under the ~14k
+  mobile budget: L20/21 899/1709, L69/70 1997/2858, L179/180 3726/4665
+  (surface + all extra layers, no clouds on Mars/Moon). No other constant
+  (`AUTO_SPIN_LEVEL`, `CLOUD_DRIFT_LEVEL`, `SPIN_TILT_LEVEL`,
+  `SPIN_REVERSE_LEVEL`) coincides with the new milestones (21/70/180), so
+  this was the only collision.
+- Verified with headless Playwright (Chromium, `?level=21&skipIntro=1`):
+  HUD shows `Katman 1/2` immediately; the `Mars'e hoş geldin` (`newPlanet`)
+  card shows first, then — after dismissing it — the `Yeni Katman`
+  (`newLayer`) card shows correctly, no longer erased by the stale timeout.
+- `docs/GDD.md` had no reference to the old milestone numbers, so nothing
+  to update there.

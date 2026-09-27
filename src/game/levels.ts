@@ -170,7 +170,7 @@ function cloudBeadCountForRadius(radius: number, cloudShellScale: number): numbe
  * climb continuously (that's density, not a new mechanic to learn), but
  * these *discrete* behavior changes are gated to their own level.
  */
-export const LAYER_MILESTONES = [45, 120, 260]; // level at which total layer count becomes 2, 3, 4
+export const LAYER_MILESTONES = [21, 70, 180]; // level at which total layer count becomes 2, 3, 4
 export const AUTO_SPIN_LEVEL = 15; // idle auto-spin begins here — before it, only the player's drag moves the globe
 export const SPIN_TILT_LEVEL = 35; // idle spin can pick a tilted (non-horizontal) axis from here
 export const SPIN_REVERSE_LEVEL = 75; // idle spin can reverse direction between spin phases from here

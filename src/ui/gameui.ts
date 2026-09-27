@@ -53,6 +53,8 @@ export class GameUI {
   private readonly loadingText: HTMLElement;
 
   private readonly scrimEl: HTMLElement;
+  /** Pending `closeScrim()` cleanup (see there) — cancelled if a new card replaces the scrim's content first. */
+  private scrimClearTimer: number | null = null;
 
   private readonly titleBeatLayer: HTMLElement;
   private titleBeatToken = 0;
@@ -361,6 +363,14 @@ export class GameUI {
 
   private showCard<T = void>(build: (resolve: (value: T) => void) => HTMLElement): Promise<T> {
     return new Promise((resolve) => {
+      // A card shown right after a previous one closes (e.g. `newPlanet` immediately followed by
+      // `newLayer` on the same level, item #18a/#13) replaces the scrim's content synchronously
+      // here, before the previous card's own `closeScrim()` delayed cleanup below has run — cancel
+      // that stale timeout so it doesn't wipe out *this* card's just-inserted content 300ms later.
+      if (this.scrimClearTimer != null) {
+        window.clearTimeout(this.scrimClearTimer);
+        this.scrimClearTimer = null;
+      }
       this.scrimEl.innerHTML = '';
       const card = build((value: T) => {
         this.closeScrim();
@@ -373,7 +383,8 @@ export class GameUI {
 
   private closeScrim(): void {
     this.scrimEl.classList.remove('wb-show');
-    window.setTimeout(() => {
+    this.scrimClearTimer = window.setTimeout(() => {
+      this.scrimClearTimer = null;
       this.scrimEl.innerHTML = '';
     }, 300);
   }

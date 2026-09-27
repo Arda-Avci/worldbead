@@ -549,12 +549,15 @@ export class Game {
     // it changes relative to the previous level instead.
     if (this.cfg.level > 1) {
       const prev = getLevel(this.cfg.level - 1);
+      // `newPlanet` and `newLayer` are checked independently (not else-if): a layer milestone can land on
+      // the same level as a planet change (e.g. level 21, both a Mars slot start and the 2-layer milestone),
+      // and both cards must then show, one after the other (each is awaited), never overlapping.
       if (prev.planet !== this.cfg.planet) await this.showDynamicCard('newPlanet', this.cfg.level);
-      else if (this.cfg.layerCount > prev.layerCount) await this.showDynamicCard('newLayer', this.cfg.level);
+      if (this.cfg.layerCount > prev.layerCount) await this.showDynamicCard('newLayer', this.cfg.level);
       // Item #19: the first level whose clouds actually drift-and-block (not just the first level with
       // clouds at all, handled separately by the static `cloudLayer` unlock) is a genuine new mechanic —
       // it can silently block a shot the player expects to land — so it gets its own forced tutorial too.
-      else if (this.cfg.cloudDriftEnabled && this.cfg.cloudBeadCount > 0 && !(prev.cloudDriftEnabled && prev.cloudBeadCount > 0)) {
+      if (this.cfg.cloudDriftEnabled && this.cfg.cloudBeadCount > 0 && !(prev.cloudDriftEnabled && prev.cloudBeadCount > 0)) {
         await this.showDynamicCard('cloudDrift', this.cfg.level);
       } else if (this.cfg.autoSpinEnabled && !prev.autoSpinEnabled) await this.showAutoSpinTutorial();
       else if (this.cfg.spinTiltEnabled && !prev.spinTiltEnabled) this.showOneTimeToast('spinTilt', S.spinTiltNotice);
