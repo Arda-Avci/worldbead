@@ -2161,3 +2161,145 @@ dev-only `colorHistogram(kind)` QA hook). `npm run build` passes
 (`tsc --noEmit && vite build`, same pre-existing "chunk larger than 500kB"
 notice as always); `grep -c __wbQA dist/assets/*.js` confirms 0 — every
 dev-only addition is stripped from the production bundle.
+
+## Production readiness audit (this session)
+
+Full-repo static audit + build verification ahead of a production push.
+Findings are in `docs/PRODUCTION_REVIEW.md` (P0-P3, each verified by
+reading the actual code path — one subagent-reported candidate,
+`Game.ts:1259` "unguarded normalize", was a false positive and was dropped
+after checking the `lengthSq` guard on the line above it). Headline items:
+texture-load failure = permanently stuck loading screen with no error UI
+(P0, web build); no `webglcontextlost` handling anywhere; planet-body
+textures are never disposed on planet change (GPU memory grows every 10
+levels); `BeadGlobe.pop()`'s cascade is confirmed dead code in real play
+(remove or redesign — it also misled a previous verification round);
+`?level=N` persists into `progress.level` and works in production builds
+(product decision: gate behind DEV or keep deliberately). `npm run build`
+passes; `__wbQA` re-confirmed stripped from `dist/` (0 matches). Nothing
+was fixed in this session — audit only.
+
+## Production-review fix pass (this session) — all 16 items from
+## `docs/PRODUCTION_REVIEW.md` addressed
+
+Fixed every code-fixable item from the previous session's audit; the
+per-item status table now lives at the bottom of
+`docs/PRODUCTION_REVIEW.md`. `npm run build` passes
+(`tsc --noEmit && vite build`, same pre-existing >500 kB chunk warning;
+sourcemaps now emitted). Verification was code-reading + type-check +
+build only — no browser/device runtime was available in this environment
+(no Playwright browsers, no Android SDK), so anything marked "needs
+device/visual confirmation" below is genuinely still unverified.
+
+Key decisions a future session must not silently undo:
+
+- **Cascade (item #5's "unsupported beads fall") is REMOVED, not fixed.**
+  It was provably dead code: `region()`, `beadsInRadius`,
+  `beadsOfColorInHemisphere` and `beadsInBand` all filter `isCovered`, so
+  a covered bead can never die before the outer bead covering it — an
+  outer bead's footprint therefore can't go fully dead while it lives.
+  This also means a previous round's claim that the cascade was
+  "verified working" was wrong (that test bypassed coverage rules).
+  If the owner still wants the mechanic, it needs a redesign around a
+  reachable support definition (e.g. same-shell neighbors), which changes
+  shot-budget/region math — a product decision, don't sneak it in.
+- **`?level=N` no longer persists.** It still jumps (README QA/preview
+  flow depends on it — do NOT gate it behind `import.meta.env.DEV`), but
+  it doesn't write `progress.level` anymore; winning the jumped-to level
+  advances the save from there as normal.
+- **Texture-load failure now shows a retry card** (`GameUI.showLoadError`,
+  strings `S.loadErrorTitle/loadErrorBody`) instead of a stuck loading
+  overlay. `prepareLevel` was split: loads in `prepareLevel` (try/catch,
+  newest-token owns the loading UI), construction in `buildLevel`.
+- **WebGL context loss**: `webglcontextlost` → preventDefault + localized
+  "restarting graphics" overlay; `webglcontextrestored` →
+  `location.reload()` (progress is in localStorage). Deliberately not a
+  manual GPU-resource rebuild.
+- **Global fatal handler in `main.ts`** (`error`/`unhandledrejection` →
+  localized restart overlay, inline-styled standalone DOM so it works even
+  if the UI module graph failed). Known-benign promise rejections
+  (`AudioContext.resume/suspend`) were given explicit `.catch(() => {})`
+  so they can't trip it. If you add new fire-and-forget promises, either
+  catch them at the source or accept the fatal overlay.
+- **Tutorial `stop()` now unwinds `run()`** via a `TutorialAborted`
+  rejection (raced with each step's `until`); `runTutorialsForLevel`
+  swallows exactly that sentinel. An aborted tutorial is NOT marked seen
+  in `progress.seenTutorials` — keep it that way, or a level ending
+  mid-tutorial would permanently skip the tutorial next time.
+- **Planet-body textures are disposed on planet switch** (incl. Earth's
+  night map, reachable only via `userData.shaderRef` uniforms). The shared
+  scene `envMap` is deliberately skipped — `PlanetBody` doesn't own it.
+- **Audio voice limiting is context-time based** (`voiceReleaseAt`
+  array purged against `ctx.currentTime` on each `play()`), not
+  wall-clock `setTimeout` — immune to hidden-tab timer throttling.
+- **Jupiter bloom 0.6** in `BLOOM_STRENGTH_BY_PLANET` is a starting
+  value, NOT visually confirmed (no headless browser available). Check
+  `?level=100&skipIntro=1` on a real display and tune.
+- **Shot budget counting hidden inner layers**: product decision made —
+  communicate, don't re-budget. `unlockDescription.newLayer` now says
+  the shot count covers every layer (EN+TR).
+- **Turkish uppercase (i→İ)**: no code change. `<html lang>` is set from
+  the detected locale in `main.ts`, and CSS `text-transform: uppercase`
+  is locale-aware in Chromium/WebKit/Firefox (both Capacitor WebViews
+  included). If a device is ever observed rendering "SEVIYE", pre-uppercase
+  at the DOM-set site with `toLocaleUpperCase('tr')` — not in
+  `strings.ts`, since some of those strings also render in non-uppercase
+  contexts (e.g. `.wb-card-title`).
+
+Still open after this session (unchanged): real low-end Android
+frame-time pass at L150+ (item #15 — the one remaining production gate),
+iOS/store/signing (item #16). Nothing was committed; the working tree
+holds all changes.
+
+## Gameplay & level-design audit (this session) — detection only, no fixes
+
+Owner asked for a focused pass on gameplay-shape problems, level-design
+logic errors, and layered-level breakage. Findings are in
+`docs/GAMEPLAY_REVIEW.md` (G1-G13, each with numbers from a numeric
+harness that runs the REAL `levels.ts` — tsc-transpiled unmodified into a
+scratchpad and driven from Node — so the per-level bead/region/star/camera
+figures are computed, not estimated). Headline items:
+
+- **G1 (P0): star system is unreachable by math.** probesTotal =
+  regions+2 caps perfect-play leftover at 2 probes → 3★ needs 40% leftover
+  → impossible on EVERY level without powers; 2★ impossible from ~L45.
+  `continueAfterLoss` (+5 probes without raising probesTotal) can even
+  score better than a clean run. Fix = stars vs. par shots, product
+  decision pending.
+- **G2 (P0): losing at 0 probes disables charged powers** (`ended` gate in
+  `consumeCharge` + `probes <= 0` gate in `handleGlobeTap`) → the paid
+  retry/continue card is the ONLY option even when the player holds
+  probe-free powers that could still clear the board.
+- **G3 (P0, layered levels): gameplay camera frames the bare body
+  (0.97), not the bead globe.** Globe spans 99% of portrait width at L1,
+  115% at 2 layers, 131% at 3, 147% at 4, 165% at 4+clouds (Venus L181+).
+  Exact arithmetic from the code's own constants (d=5.60, hFOV≈22.3° at
+  390×844); `SpaceScene.setBodyRadius` already has the real radius but the
+  camera rig never sees it. One portrait screenshot at L181+ recommended
+  before/after the fix (past screenshot rounds looked at palettes on these
+  framings and never flagged the overflow — don't repeat that blind spot).
+- **G4 (P1): invasion fire adds unbudgeted mandatory shots** (new fire
+  regions + region splits + spread) vs the fixed regions+2 budget →
+  unwinnable-without-paying levels are possible; G2 compounds it.
+- **G5 (P1): invasion ships charge/fire while blocking cards/tutorials
+  are up** (invasion ticks whenever state==='playing', which includes the
+  tutorial phase inside playLevel; the scrim blocks all taps).
+- **G6 (P1): Jupiter's regionFloor=28 opts it out of the shot budget** →
+  Jupiter slots run ~2-5× more shots than neighboring slots.
+- **G7 (P1): layer milestones are difficulty cliffs** (L20→21 regions
+  +57% / beads +116%; L179→180 beads +350%) and L21 doubles as a planet
+  change, contradicting the file's own "never two new things at once"
+  rule.
+- **G8 (P1): L700-1000 is flat** (bead size saturates at 700; only K,
+  regionTarget and spin still move).
+- P2s: dead `combo` field, economy inversion (~73 stardust/level at L1 vs
+  ~1000+ at L500 vs flat prices), silent extinguish queue override,
+  partial-coverage region splits, feel-tuning candidates that need a
+  device.
+- Verified clean: no all-covered soft-lock, fire can't reach covered
+  beads, queue invariants hold, win-before-lose precedence, budget matches
+  the real board at level start.
+
+No code was changed this session. Fix order proposal when the owner
+approves: G1+G2+G4 together (one coherent pass over GameSession
+budget/stars/lose logic), then G3 (camera), then G5-G7.
