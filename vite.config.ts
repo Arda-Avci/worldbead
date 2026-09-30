@@ -27,5 +27,8 @@ export default defineConfig({
   build: {
     target: 'es2020',
     outDir: 'dist',
+    // Ship sourcemaps (production review item #11): the repo is open source, so there is no
+    // secrecy concern, and field failures on a phone are otherwise undiagnosable minified stacks.
+    sourcemap: true,
   },
 });

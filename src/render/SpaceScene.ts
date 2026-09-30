@@ -36,15 +36,18 @@ const AXIAL_TILT_DEG: Record<PlanetId, number> = {
  * cream/tan bead palette plus its atmosphere glow was pushing a huge share of the frame over
  * the bloom threshold, washing both the globe and the background starfield out to a near-white
  * haze (owner bug report) — every other planet's darker average palette never triggers this.
- * Rather than lower the shared bloom pass for every planet (which would dull Jupiter's/Earth's
+ * Rather than lower the shared bloom pass for every planet (which would dull Earth's
  * highlights that were never a problem), it's tuned down specifically while Venus is loaded.
+ * Jupiter (production review item #13) gets a milder reduction: its large pale cream band
+ * classes wash toward white under the shared bloom at some camera framings — 0.6 is a
+ * starting value, to be confirmed against real screenshots at the Jupiter slot.
  */
 const BLOOM_STRENGTH_BY_PLANET: Record<PlanetId, number> = {
   earth: 0.85,
   moon: 0.85,
   venus: 0.4,
   mars: 0.85,
-  jupiter: 0.85,
+  jupiter: 0.6,
 };
 
 export class SpaceScene {
@@ -91,6 +94,13 @@ export class SpaceScene {
   private bodyRadius = 0.97 * 1.05;
   private readonly envReady: Promise<THREE.Texture | null>;
   private readonly appliedShake = new THREE.Vector3();
+  // Per-frame scratch for `updateGameplayLighting`/`sunOverlapsGlobe` — both run every frame,
+  // so allocating locals there is pure GC churn on a 60 fps mobile loop (production review item #7).
+  private readonly tmpCamDir = new THREE.Vector3();
+  private readonly tmpCamRight = new THREE.Vector3();
+  private readonly tmpCamUp = new THREE.Vector3();
+  private readonly tmpToSun = new THREE.Vector3();
+  private readonly tmpToGlobe = new THREE.Vector3();
   private elapsed = 0;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -344,11 +354,11 @@ export class SpaceScene {
     // (the reverse of its view direction) and tilt it up/side around the
     // camera's own right/up axes, then place the light there aimed at the
     // globe (which sits at the world origin).
-    const camDir = new THREE.Vector3();
+    const camDir = this.tmpCamDir;
     this.camera.getWorldDirection(camDir);
-    const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0);
-    const up = new THREE.Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1);
-    const keyDir = camDir.clone().negate();
+    const right = this.tmpCamRight.setFromMatrixColumn(this.camera.matrixWorld, 0);
+    const up = this.tmpCamUp.setFromMatrixColumn(this.camera.matrixWorld, 1);
+    const keyDir = camDir.negate();
     keyDir.applyAxisAngle(right, THREE.MathUtils.degToRad(-30));
     keyDir.applyAxisAngle(up, THREE.MathUtils.degToRad(25));
     this.gameplayLight.position.copy(keyDir.multiplyScalar(50));
@@ -390,8 +400,8 @@ export class SpaceScene {
    */
   private sunOverlapsGlobe(): boolean {
     const camPos = this.camera.position;
-    const toSun = SUN_DIRECTION.clone().multiplyScalar(SUN_DISTANCE).sub(camPos).normalize();
-    const toGlobe = new THREE.Vector3(0, 0, 0).sub(camPos);
+    const toSun = this.tmpToSun.copy(SUN_DIRECTION).multiplyScalar(SUN_DISTANCE).sub(camPos).normalize();
+    const toGlobe = this.tmpToGlobe.copy(camPos).negate();
     const dist = toGlobe.length();
     toGlobe.normalize();
     const bodyRadius = this.bodyRadius;

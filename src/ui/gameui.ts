@@ -6,7 +6,7 @@ import '@fontsource/exo-2/800.css';
 import './ui.css';
 import { icon } from './icons';
 import { haptic, setHapticsEnabled } from './haptic';
-import { POWER_NAMES, S } from './strings';
+import { PLANET_NAMES, POWER_NAMES, S } from './strings';
 import type {
   GameUIOptions,
   LevelCompleteData,
@@ -73,7 +73,7 @@ export class GameUI {
         <header class="wb-topbar">
           <div class="wb-stardust-pill wb-glass">${icon('stardust')}<span class="wb-num-fast" data-stardust>0</span></div>
           <button class="wb-planet-badge wb-glass" type="button" data-planet-badge aria-label="${S.planetProgressAria}">
-            <span class="wb-planet-name" data-planet-name>Earth</span>
+            <span class="wb-planet-name" data-planet-name>${PLANET_NAMES.earth}</span>
             <span class="wb-level-line"><span class="wb-ring" data-ring style="--pct:0"></span><span data-level-num>${S.level(1)}</span></span>
             <span class="wb-layer-line wb-hidden" data-layer-line></span>
             <span class="wb-next-planet-line wb-hidden" data-next-planet></span>
@@ -97,7 +97,7 @@ export class GameUI {
 
       <div class="wb-loading" data-loading>
         <div class="wb-loading-planet"></div>
-        <div class="wb-loading-text wb-loading-dots" data-loading-text>${S.loading('Earth')}</div>
+        <div class="wb-loading-text wb-loading-dots" data-loading-text>${S.loading(PLANET_NAMES.earth)}</div>
       </div>
 
       <div class="wb-scrim" data-scrim></div>
@@ -292,6 +292,37 @@ export class GameUI {
     }, 350);
   }
 
+  /**
+   * P0 (production review): blocking error card shown when a level's assets fail
+   * to load — the alternative was a loading overlay that never went away. Resolves
+   * when the player taps retry; the caller then re-attempts the load.
+   */
+  showLoadError(): Promise<void> {
+    return this.showCard((resolve) => {
+      const card = document.createElement('div');
+      card.className = 'wb-card wb-glass';
+      card.innerHTML = `
+        <div class="wb-card-title" style="background:none;-webkit-text-fill-color:var(--wb-danger);color:var(--wb-danger)">${S.loadErrorTitle}</div>
+        <div class="wb-card-sub">${escapeHtml(S.loadErrorBody)}</div>
+        <button class="wb-btn-primary" type="button" data-primary>${escapeHtml(S.retry)}</button>
+      `;
+      (card.querySelector('[data-primary]') as HTMLButtonElement).addEventListener('click', () => resolve());
+      return card;
+    });
+  }
+
+  /**
+   * P1 (production review): WebGL context loss — covers the frozen canvas with a
+   * localized "restarting" note while the page reloads on `contextrestored`.
+   * Reuses the loading overlay (same visual language), with raw text instead of
+   * the `Loading <planet>` format.
+   */
+  showGraphicsRestart(): void {
+    this.loadingText.textContent = S.graphicsRestarting;
+    this.loadingEl.classList.remove('wb-fade-out');
+    this.loadingEl.style.display = 'grid';
+  }
+
   // ------------------------------------------------------- level complete
 
   showLevelComplete(data: LevelCompleteData): Promise<void> {
@@ -353,7 +384,7 @@ export class GameUI {
         <div class="wb-unlock-icon">${icon((data.icon as any) ?? 'star')}</div>
         <div class="wb-card-title">${escapeHtml(data.name)}</div>
         <div class="wb-card-sub">${escapeHtml(data.description)}</div>
-        <button class="wb-btn-primary" type="button" data-primary>${escapeHtml(data.ctaLabel ?? 'Try it')}</button>
+        <button class="wb-btn-primary" type="button" data-primary>${escapeHtml(data.ctaLabel ?? S.tryIt)}</button>
       `;
       const primary = card.querySelector('[data-primary]') as HTMLButtonElement;
       primary.addEventListener('click', () => resolve());

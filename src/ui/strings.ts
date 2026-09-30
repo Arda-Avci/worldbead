@@ -61,6 +61,20 @@ export const S = {
   layerProgress: (current: number, total: number) => pick(`Layer ${current}/${total}`, `Katman ${current}/${total}`),
   layerCleared: pick('Layer cleared!', 'Katman tamamlandı!'),
 
+  // ---------------------------------------------------- loading & fatal
+  /** P0: shown on a blocking card when a level's textures/assets fail to load (see `Game.prepareLevel`). */
+  loadErrorTitle: pick('Loading Failed', 'Yükleme Başarısız'),
+  loadErrorBody: pick(
+    'The planet could not be loaded. Check your connection and try again.',
+    'Gezegen yüklenemedi. Bağlantını kontrol edip tekrar dene.',
+  ),
+  /** P1: shown over the frozen canvas between a WebGL context loss and the automatic reload. */
+  graphicsRestarting: pick('Restarting graphics…', 'Grafikler yeniden başlatılıyor…'),
+  /** Last-resort overlay from the global error handlers in `main.ts`. */
+  fatalTitle: pick('Something went wrong', 'Bir şeyler ters gitti'),
+  fatalBody: pick('The game hit an unexpected error. Restarting usually fixes it.', 'Oyun beklenmedik bir hatayla karşılaştı. Yeniden başlatmak genelde çözer.'),
+  restart: pick('Restart', 'Yeniden Başlat'),
+
   // ------------------------------------------------------------- toasts
   purchased: pick('Purchased!', 'Satın alındı!'),
   notEnoughStardust: pick('Not enough stardust', 'Yeterli yıldız tozu yok'),
@@ -106,7 +120,12 @@ export const S = {
     solarFlare: pick('Pops all visible-hemisphere beads of the current probe color.', 'Görünen yarımküredeki aktif mermi renkli tüm boncukları patlatır.'),
     comet: pick('Pops a band along a great circle chosen by a swipe.', 'Kaydırarak seçtiğin bir çember boyunca bir bant patlatır.'),
     cloudLayer: pick('Clouds now cover the surface. Pop through them to reach the beads beneath.', 'Artık bulutlar yüzeyi kaplıyor. Altındaki boncuklara ulaşmak için onları patlat.'),
-    newLayer: pick('The globe now has an extra outer layer. Clear it to reach the finer beads underneath.', 'Küre artık ekstra bir dış katmana sahip. Altındaki daha ince boncuklara ulaşmak için onu temizle.'),
+    // The last sentence is the product decision for the shot budget counting not-yet-visible inner
+    // layers (production review item #14, option "communicate"): the budget covers the whole level.
+    newLayer: pick(
+      'The globe now has an extra outer layer. Clear it to reach the finer beads underneath. Your shot count covers every layer.',
+      'Küre artık ekstra bir dış katmana sahip. Altındaki daha ince boncuklara ulaşmak için onu temizle. Atış sayın tüm katmanları kapsar.',
+    ),
     autoSpin: pick('The globe now keeps turning on its own. Dragging still works — just push through it.', 'Küre artık kendi kendine dönmeye başladı. Sürüklemek hâlâ işe yarar — sadece biraz daha zorlanacaksın.'),
     cloudDrift: pick('These clouds now drift on their own, sliding over the beads and blocking shots until they move on — or you pop them.', 'Bu bulutlar artık kendi kendine sürükleniyor, boncukların üzerinde kayıyor ve geçene ya da onları patlatana kadar atışları engelliyor.'),
     invasion: pick('Alien ships can now appear. Tap a ship to destroy it before it fires — its laser sets beads on fire.', 'Artık uzaylı gemileri belirebilir. Ateş etmeden önce gemiye dokunarak yok et — lazeri boncukları ateşe verir.'),

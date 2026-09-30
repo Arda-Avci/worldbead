@@ -28,6 +28,14 @@ export interface TutorialStep {
 
 const FORWARD_PADDING = 6; // px of extra forgiveness around the computed circle
 
+/** Sentinel rejection that unwinds an in-flight `run()` when `stop()` cuts it short (production review item #12). */
+class TutorialAborted extends Error {}
+
+/** Type guard for the rejection `run()` throws after a `stop()` — lets the integration layer tell "level ended mid-tutorial" apart from a real bug. */
+export function isTutorialAborted(e: unknown): boolean {
+  return e instanceof TutorialAborted;
+}
+
 export class Tutorial {
   private readonly root: HTMLElement;
   private layer: HTMLElement | null = null;
@@ -40,6 +48,8 @@ export class Tutorial {
   private rafId = 0;
   private currentCircle: ScreenCircle | null = null;
   private forwarding = false;
+  /** Rejects the in-flight `run()`'s abort promise; set for the duration of each `run()` call. */
+  private abortCurrent: (() => void) | null = null;
   private onResize = () => this.layoutStatic();
 
   constructor(root: HTMLElement) {
@@ -48,25 +58,36 @@ export class Tutorial {
 
   /**
    * Force-ends whatever `run()` call is in progress right now: unmounts the
-   * overlay immediately, regardless of which step's `until` is still
-   * pending. Used by the integration layer when a real game outcome (e.g.
-   * a win/lose reached through a tap forwarded mid-tutorial) makes the
-   * tutorial moot. The in-flight `run()` promise itself is left pending
-   * (its `until` may never resolve) — callers that call `stop()` must not
-   * keep awaiting that `run()` call afterwards.
+   * overlay immediately AND unwinds the in-flight `run()` by rejecting it
+   * with `TutorialAborted` (so its promise is never left pending forever —
+   * previously its `until` might never resolve, orphaning the closures/rAF
+   * chain of that call; production review item #12). Used by the integration
+   * layer when a real game outcome (e.g. a win/lose reached through a tap
+   * forwarded mid-tutorial) makes the tutorial moot; callers awaiting `run()`
+   * must swallow the abort via `isTutorialAborted`.
    */
   stop(): void {
+    const abort = this.abortCurrent;
+    this.abortCurrent = null;
+    abort?.();
     this.unmount();
   }
 
-  /** Runs all steps in order; resolves once the last step's `until` resolves. */
+  /**
+   * Runs all steps in order; resolves once the last step's `until` resolves.
+   * Rejects with `TutorialAborted` if `stop()` intervenes mid-run.
+   */
   async run(steps: TutorialStep[]): Promise<void> {
     this.mount();
+    const abortPromise = new Promise<never>((_, reject) => {
+      this.abortCurrent = () => reject(new TutorialAborted());
+    });
     try {
       for (const step of steps) {
-        await this.runStep(step);
+        await this.runStep(step, abortPromise);
       }
     } finally {
+      this.abortCurrent = null;
       this.unmount();
     }
   }
@@ -117,7 +138,7 @@ export class Tutorial {
     // Mask/ring geometry is recomputed every frame in the rAF loop; nothing static to redo here.
   }
 
-  private async runStep(step: TutorialStep): Promise<void> {
+  private async runStep(step: TutorialStep, abortPromise: Promise<never>): Promise<void> {
     this.captionEl.textContent = step.caption;
     this.handEl.className = `wb-tutorial-hand wb-gesture-${step.gesture}`;
     this.handEl.style.display = step.gesture === 'none' ? 'none' : '';
@@ -133,7 +154,9 @@ export class Tutorial {
     loop();
 
     try {
-      await step.until;
+      // Raced against the abort so a `stop()` still runs the rAF cleanup in
+      // `finally` instead of leaving this step's loop pending forever.
+      await Promise.race([step.until, abortPromise]);
     } finally {
       cancelAnimationFrame(this.rafId);
     }

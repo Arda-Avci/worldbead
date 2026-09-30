@@ -188,8 +188,9 @@ export class PlanetBody {
       } else if (this.isVenus) {
         const mat = this.cloudMaterial as THREE.ShaderMaterial;
         mat.uniforms.uTime.value = elapsed;
-        const v = sunDirWorld.clone().transformDirection(camera.matrixWorldInverse).normalize();
-        (mat.uniforms.uSunDirView.value as THREE.Vector3).copy(v);
+        // Scratch, not a per-frame clone — this runs every frame (production review item #7).
+        tmpSunDirView.copy(sunDirWorld).transformDirection(camera.matrixWorldInverse).normalize();
+        (mat.uniforms.uSunDirView.value as THREE.Vector3).copy(tmpSunDirView);
       }
     }
   }
@@ -202,12 +203,43 @@ export class PlanetBody {
   }
 }
 
+const tmpSunDirView = new THREE.Vector3();
+
+/**
+ * Disposes every texture a material owns (production review item #3 — without this,
+ * every planet switch leaked the previous planet's day/night/cloud textures in GPU
+ * memory). Covers direct texture slots (`.map`, `.alphaMap`, ...) and sampler
+ * uniforms patched in via `onBeforeCompile` — Earth's night map is reachable ONLY
+ * through the compiled shader's uniform set (`userData.shaderRef`), not through any
+ * material property. `envMap` is explicitly skipped: it is the shared scene
+ * environment owned by `SpaceScene`, not by this body.
+ */
+function disposeMaterialTextures(mat: THREE.Material): void {
+  for (const [key, value] of Object.entries(mat)) {
+    if (key === 'envMap') continue;
+    if (value instanceof THREE.Texture) value.dispose();
+  }
+  const shader = (mat as unknown as { userData?: { shaderRef?: { uniforms?: Record<string, { value: unknown }> } } }).userData?.shaderRef;
+  if (shader?.uniforms) {
+    for (const u of Object.values(shader.uniforms)) {
+      if (u && u.value instanceof THREE.Texture) u.value.dispose();
+    }
+  }
+}
+
 function disposeObject(obj: THREE.Object3D): void {
   obj.traverse((o) => {
     const mesh = o as THREE.Mesh;
     if (mesh.geometry) mesh.geometry.dispose();
     const mat = mesh.material as THREE.Material | THREE.Material[] | undefined;
-    if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-    else if (mat) mat.dispose();
+    if (Array.isArray(mat)) {
+      mat.forEach((m) => {
+        disposeMaterialTextures(m);
+        m.dispose();
+      });
+    } else if (mat) {
+      disposeMaterialTextures(mat);
+      mat.dispose();
+    }
   });
 }

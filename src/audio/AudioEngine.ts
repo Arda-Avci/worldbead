@@ -24,7 +24,14 @@ export class AudioEngine {
 
   private sfxEnabled = true;
   private musicEnabled = true;
-  private activeVoices = 0;
+  /**
+   * Context-time (`ctx.currentTime`) at which each in-flight SFX voice is scheduled to end
+   * (production review item #6). Previously a wall-clock `setTimeout` decremented a counter,
+   * which drifted from reality while the tab was hidden (context suspended + timers throttled),
+   * letting the voice limiter wrongly reject/admit sounds after resume. Context time only
+   * advances while audio is actually rendering, so it can't drift.
+   */
+  private voiceReleaseAt: number[] = [];
 
   private currentTrack: MusicTrack | null = null;
   private desiredPlanet: PlanetId | null = null;
@@ -44,7 +51,7 @@ export class AudioEngine {
     const ctx = this.ctx;
     if (!ctx) return;
     if (ctx.state === 'suspended') {
-      void ctx.resume();
+      void ctx.resume().catch(() => {});
     }
     // Nudge iOS/Android WebViews that only unlock audio inside the gesture
     // handler itself by starting and immediately stopping a silent buffer.
@@ -66,17 +73,19 @@ export class AudioEngine {
     const ctx = this.ctx;
     const sfxBus = this.sfxBus;
     if (!ctx || !sfxBus) return;
-    if (ctx.state === 'suspended') void ctx.resume();
-    if (this.activeVoices >= MAX_VOICES) return; // voice limiting to avoid pileup/clipping
+    if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
+
+    // Purge voices whose scheduled end has passed, then limit (avoid pileup/clipping).
+    const now = ctx.currentTime;
+    let live = 0;
+    for (const t of this.voiceReleaseAt) if (t > now) this.voiceReleaseAt[live++] = t;
+    this.voiceReleaseAt.length = live;
+    if (this.voiceReleaseAt.length >= MAX_VOICES) return;
 
     const intensity = opts?.intensity ?? 0.5;
     const planet = this.currentTrack?.planet ?? this.desiredPlanet ?? 'earth';
-    this.activeVoices += 1;
-    const duration = buildSfx(ctx, sfxBus, name, ctx.currentTime, intensity, planet);
-    const releaseMs = Math.max(10, duration * 1000 + 60);
-    setTimeout(() => {
-      this.activeVoices = Math.max(0, this.activeVoices - 1);
-    }, releaseMs);
+    const duration = buildSfx(ctx, sfxBus, name, now, intensity, planet);
+    this.voiceReleaseAt.push(now + duration + 0.06);
   }
 
   /** Starts (or crossfades into) generative ambient music for `planet`. */
@@ -188,9 +197,9 @@ export class AudioEngine {
     if (!ctx) return;
     if (document.hidden) {
       this.wasRunningBeforeHide = ctx.state === 'running';
-      if (ctx.state === 'running') void ctx.suspend();
+      if (ctx.state === 'running') void ctx.suspend().catch(() => {});
     } else if (this.wasRunningBeforeHide && ctx.state === 'suspended') {
-      void ctx.resume();
+      void ctx.resume().catch(() => {});
     }
   }
 }

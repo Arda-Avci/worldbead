@@ -66,16 +66,6 @@ interface Shell {
   coveringShellIndex?: number;
   /** covering[i] = bead indices on `coveringShellIndex`'s shell whose footprint covers this shell's bead i. */
   coveredBy?: Int32Array[];
-  /**
-   * Cascading collapse (owner bug report): index (into `BeadGlobe.shells`) of
-   * the shell this shell physically rests on/covers (the next shell in
-   * toward the surface), if any. Set on the *outer* side of a
-   * `coveringShellIndex` pair — the inverse direction from `coveringShellIndex`,
-   * which is set on the inner/covered shell instead.
-   */
-  coversBodyShellIndex?: number;
-  /** coversFootprint[i] = bead indices on `coversBodyShellIndex`'s shell that this bead `i` sits over. Used to detect "nothing left underneath" (see `findUnsupported`). */
-  coversFootprint?: Int32Array[];
   /** Item #19: clouds shell only — radians/sec the mesh drifts around its local Y axis, independent of the globe's own spin/drag. 0 = static. */
   driftSpeedRad?: number;
   /** Item #19: radians of drift accumulated since the last `coveredBy` recompute (reset each recompute). */
@@ -790,7 +780,7 @@ function buildVenusCloudPaint(dirs: Float32Array, seed: number): Int16Array {
  * the outermost layer, each outer layer over the next one in, down to the
  * real surface).
  */
-function buildCoveredBy(coveringDirs: Float32Array, coveringSpacing: number, coveringFactor: number, bodyDirs: Float32Array, bodySpacing: number, bodyFactor: number): { coveredBy: Int32Array[]; footprint: Int32Array[] } {
+function buildCoveredBy(coveringDirs: Float32Array, coveringSpacing: number, coveringFactor: number, bodyDirs: Float32Array, bodySpacing: number, bodyFactor: number): Int32Array[] {
   const forward = computeFootprint(coveringDirs, coveringSpacing, coveringFactor, bodyDirs, bodySpacing, bodyFactor); // forward[coveringIdx] -> body indices it covers
   const bodyCount = bodyDirs.length / 3;
   const buckets: number[][] = new Array(bodyCount);
@@ -798,7 +788,7 @@ function buildCoveredBy(coveringDirs: Float32Array, coveringSpacing: number, cov
   for (let ci = 0; ci < forward.length; ci++) {
     for (const bi of forward[ci]) buckets[bi].push(ci);
   }
-  return { coveredBy: buckets.map((arr) => Int32Array.from(arr)), footprint: forward };
+  return buckets.map((arr) => Int32Array.from(arr));
 }
 
 /**
@@ -949,11 +939,7 @@ export class BeadGlobe implements GlobeAdapter {
       const shell = this.makeShell('layer', dirs, start, list, colorIdx, palette, radius, layerCfg.beadCount, seed);
       if (prevDirs) {
         shell.coveringShellIndex = prevShellIndex!;
-        const { coveredBy, footprint } = buildCoveredBy(prevDirs, prevSpacing, BEAD_RADIUS_FACTOR, dirs, spacing, BEAD_RADIUS_FACTOR);
-        shell.coveredBy = coveredBy;
-        // The previous (more outer) shell in this loop physically rests on this one.
-        this.shells[prevShellIndex!].coversBodyShellIndex = this.shells.length;
-        this.shells[prevShellIndex!].coversFootprint = footprint;
+        shell.coveredBy = buildCoveredBy(prevDirs, prevSpacing, BEAD_RADIUS_FACTOR, dirs, spacing, BEAD_RADIUS_FACTOR);
       }
       this.shells.push(shell);
       prevDirs = dirs;
@@ -979,10 +965,7 @@ export class BeadGlobe implements GlobeAdapter {
     const surface = this.makeShell('surface', surfaceDirs, sStart, sList, sColorIdx, sPalette, 1.0, cfg.beadCount, cfg.seed);
     if (prevDirs) {
       surface.coveringShellIndex = prevShellIndex!;
-      const { coveredBy, footprint } = buildCoveredBy(prevDirs, prevSpacing, BEAD_RADIUS_FACTOR, surfaceDirs, surfaceSpacing, BEAD_RADIUS_FACTOR);
-      surface.coveredBy = coveredBy;
-      this.shells[prevShellIndex!].coversBodyShellIndex = this.shells.length;
-      this.shells[prevShellIndex!].coversFootprint = footprint;
+      surface.coveredBy = buildCoveredBy(prevDirs, prevSpacing, BEAD_RADIUS_FACTOR, surfaceDirs, surfaceSpacing, BEAD_RADIUS_FACTOR);
     }
     this.shells.push(surface);
     const outermostBodyIndex = numExtra > 0 ? 0 : this.shells.length - 1;
@@ -1059,10 +1042,7 @@ export class BeadGlobe implements GlobeAdapter {
 
       const outermostBody = this.shells[outermostBodyIndex];
       outermostBody.coveringShellIndex = cloudShellIndex;
-      const { coveredBy: cloudCoveredBy, footprint: cloudFootprint } = buildCoveredBy(cloudDirs, cloudSpacing, BEAD_RADIUS_FACTOR_CLOUD, outermostBodyDirs, outermostBodySpacing, BEAD_RADIUS_FACTOR);
-      outermostBody.coveredBy = cloudCoveredBy;
-      clouds.coversBodyShellIndex = outermostBodyIndex;
-      clouds.coversFootprint = cloudFootprint;
+      outermostBody.coveredBy = buildCoveredBy(cloudDirs, cloudSpacing, BEAD_RADIUS_FACTOR_CLOUD, outermostBodyDirs, outermostBodySpacing, BEAD_RADIUS_FACTOR);
       this.cloudCoverRecalc = { cloudDirs, cloudSpacing, bodyShellIndex: outermostBodyIndex, bodyDirs: outermostBodyDirs, bodySpacing: outermostBodySpacing };
     }
 
@@ -1354,25 +1334,22 @@ export class BeadGlobe implements GlobeAdapter {
   }
 
   /**
-   * Pops the given beads, then cascades (item #5, "unsupported groups fall
-   * on their own"): after any pop, any bead in an outer shell whose entire
-   * footprint on the shell it physically rests on has just gone fully dead
-   * is popped too — repeated until nothing new becomes unsupported. Returns
-   * the total number of beads popped (the requested beads plus any cascade),
-   * so callers can score/react to what actually happened, not just what was
-   * directly targeted.
+   * Pops the given beads and returns the count actually popped (already-dead
+   * beads are skipped), so callers can score/react to what actually happened.
+   *
+   * Note: this used to also run an "unsupported outer beads fall on their own"
+   * cascade (item #5). That cascade was provably dead code (production review
+   * item #4): every code path that can kill beads — `region()`,
+   * `beadsInRadius`, `beadsOfColorInHemisphere`, `beadsInBand` — filters out
+   * covered beads, so an outer bead's footprint on the shell below can never
+   * go fully dead while that outer bead is still alive (its footprint beads
+   * are exactly the beads it covers, and covered beads can't die first).
+   * It was removed rather than redesigned: any reachable redesign (e.g.
+   * same-shell support) would change the shot-budget math and the
+   * region-count model, which is a gameplay-design decision, not a bug fix.
    */
   pop(beads: BeadRef[]): number {
-    let total = this.popInternal(beads);
-    let frontier = beads;
-    let guard = 0;
-    while (frontier.length > 0 && guard++ < this.shells.length + 2) {
-      const unsupported = this.findUnsupported(frontier);
-      if (unsupported.length === 0) break;
-      total += this.popInternal(unsupported);
-      frontier = unsupported;
-    }
-    return total;
+    return this.popInternal(beads);
   }
 
   /** Marks the given beads dead and queues their FX events; skips any already-dead. Returns the count actually popped. */
@@ -1391,38 +1368,6 @@ export class BeadGlobe implements GlobeAdapter {
       popped++;
     }
     return popped;
-  }
-
-  /**
-   * Every alive bead, on any shell that physically rests on one of the
-   * `justPopped` beads' shells, whose entire covering footprint on that
-   * shell has just gone fully dead — i.e. it has nothing left underneath it
-   * (see `Shell.coversFootprint`). A bead with an empty/unknown footprint is
-   * left alone (never treated as floating) rather than risk popping beads
-   * this coarse geometric check can't actually justify.
-   */
-  private findUnsupported(justPopped: BeadRef[]): BeadRef[] {
-    const affectedShellIds = new Set<number>();
-    for (const b of justPopped) affectedShellIds.add(b.shellId);
-    const out: BeadRef[] = [];
-    for (let shellId = 0; shellId < this.shells.length; shellId++) {
-      const shell = this.shells[shellId];
-      if (shell.coversBodyShellIndex === undefined || !shell.coversFootprint) continue;
-      if (!affectedShellIds.has(shell.coversBodyShellIndex)) continue;
-      const body = this.shells[shell.coversBodyShellIndex];
-      const footprint = shell.coversFootprint;
-      for (let i = 0; i < shell.count; i++) {
-        if (!shell.alive[i]) continue;
-        const fp = footprint[i];
-        if (!fp || fp.length === 0) continue;
-        let anyAlive = false;
-        for (let k = 0; k < fp.length; k++) {
-          if (body.alive[fp[k]]) { anyAlive = true; break; }
-        }
-        if (!anyAlive) out.push({ shellId, index: i });
-      }
-    }
-    return out;
   }
 
   /** Popped bead positions + colors since the last call, for FX. */
@@ -1737,9 +1682,7 @@ export class BeadGlobe implements GlobeAdapter {
     const { cloudSpacing, bodyShellIndex, bodyDirs, bodySpacing } = this.cloudCoverRecalc;
     const rotatedCloudDirs = rotateDirsY(clouds.dirs, clouds.mesh.rotation.y);
     const body = this.shells[bodyShellIndex];
-    const { coveredBy, footprint } = buildCoveredBy(rotatedCloudDirs, cloudSpacing, BEAD_RADIUS_FACTOR_CLOUD, bodyDirs, bodySpacing, BEAD_RADIUS_FACTOR);
-    body.coveredBy = coveredBy;
-    clouds.coversFootprint = footprint;
+    body.coveredBy = buildCoveredBy(rotatedCloudDirs, cloudSpacing, BEAD_RADIUS_FACTOR_CLOUD, bodyDirs, bodySpacing, BEAD_RADIUS_FACTOR);
   }
 
   /** Transforms a group-local point/direction into `shell`'s own local space, undoing its drift rotation (item #19; identity for non-drifting shells). */

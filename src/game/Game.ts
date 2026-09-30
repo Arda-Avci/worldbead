@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { SpaceScene } from '../render/SpaceScene';
 import { AudioEngine } from '../audio/AudioEngine';
 import { GameUI } from '../ui/gameui';
-import { Tutorial, type ScreenCircle } from '../ui/tutorial';
+import { isTutorialAborted, Tutorial, type ScreenCircle } from '../ui/tutorial';
 import { haptic } from '../ui/haptic';
 import type { PowerButtonState, Settings } from '../ui/types';
 import { BeadGlobe, type TextureMap, type TextureName } from './BeadGlobe';
@@ -219,6 +219,22 @@ export class Game {
     this.ui.setSettings(this.progress.settings);
 
     window.addEventListener('resize', () => this.scene.resize());
+
+    // P1 (production review): WebGL context loss (memory pressure / GPU reset /
+    // some screen-off paths on Android) otherwise leaves a frozen black canvas
+    // under a still-interactive HUD — indistinguishable from a hang. preventDefault
+    // lets the browser attempt a restore; on restore we reload the page (progress
+    // lives in localStorage, so nothing is lost) rather than trying to rebuild
+    // every GPU resource by hand. The overlay tells the player what's happening
+    // in the meantime.
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this.ui.showGraphicsRestart();
+    });
+    canvas.addEventListener('webglcontextrestored', () => {
+      location.reload();
+    });
+
     this.bindInput();
 
     // Dev-only QA hook: exposes a way to find real, hit-testable screen
@@ -288,10 +304,14 @@ export class Game {
 
     const qp = new URLSearchParams(location.search);
     const forced = Number(qp.get('level'));
-    if (forced > 0) this.progress.level = Math.min(MAX_LEVEL, Math.max(1, Math.floor(forced)));
+    // `?level=N` is a QA/review jump hook (see README): it picks the STARTING level for
+    // this session only, and deliberately does NOT write to `progress` — merely visiting
+    // a shared link must not overwrite a player's saved level (production review item #10).
+    // Winning the jumped-to level still advances the save from there, as normal.
+    const startLevel = forced > 0 ? Math.min(MAX_LEVEL, Math.max(1, Math.floor(forced))) : this.progress.level;
     const skipIntroQP = qp.get('skipIntro') === '1' || forced > 0;
 
-    await this.prepareLevel(this.progress.level);
+    await this.prepareLevel(startLevel);
 
     if (!skipIntroQP) {
       await this.playIntro(!this.progress.introSeen);
@@ -470,16 +490,37 @@ export class Game {
     const planetDef = PLANETS[cfg.planet];
     this.ui.showLoading(PLANET_NAMES[cfg.planet]);
 
-    const images: TextureMap = {};
-    images[planetDef.surfaceTexture as TextureName] = await loadTexture(planetDef.surfaceTexture as TextureName);
-    if (cfg.cloudBeadCount > 0 && planetDef.cloudTexture) {
-      images[planetDef.cloudTexture as TextureName] = await loadTexture(planetDef.cloudTexture as TextureName);
+    try {
+      const images: TextureMap = {};
+      images[planetDef.surfaceTexture as TextureName] = await loadTexture(planetDef.surfaceTexture as TextureName);
+      if (cfg.cloudBeadCount > 0 && planetDef.cloudTexture) {
+        images[planetDef.cloudTexture as TextureName] = await loadTexture(planetDef.cloudTexture as TextureName);
+      }
+      if (this.currentPlanetLoaded !== cfg.planet) {
+        await this.scene.loadPlanet(cfg.planet);
+        this.currentPlanetLoaded = cfg.planet;
+      }
+      // A newer level was requested while textures loaded — that newer call now owns
+      // the loading UI (it ends in its own `hideLoading`/error card), so just bail out.
+      if (token !== this.buildToken) return;
+      this.buildLevel(cfg, images);
+      this.ui.hideLoading();
+    } catch (err) {
+      // P0 (production review): a texture/planet load failure used to escape as an
+      // unhandled rejection, leaving the loading overlay up forever — a dead screen.
+      // Show a localized error card with a retry button instead; retry re-runs the
+      // whole load (successes are cached in `textureCache`, so only the failed
+      // fetches are re-attempted).
+      if (token !== this.buildToken) return; // a newer prepareLevel owns the UI now
+      console.error('[WorldBead] level load failed:', err);
+      this.ui.hideLoading();
+      await this.ui.showLoadError();
+      return this.prepareLevel(levelNumber);
     }
-    if (this.currentPlanetLoaded !== cfg.planet) {
-      await this.scene.loadPlanet(cfg.planet);
-      this.currentPlanetLoaded = cfg.planet;
-    }
-    if (token !== this.buildToken) return; // a newer level was requested while textures loaded
+  }
+
+  /** Builds the globe/session/HUD for `cfg` once its textures and planet body are loaded. */
+  private buildLevel(cfg: LevelConfig, images: TextureMap): void {
 
     if (this.globe) {
       this.scene.globe.remove(this.globe.group);
@@ -537,7 +578,6 @@ export class Game {
     this.scene.configureSpin(cfg.seed, cfg.autoSpinEnabled, (cfg.level - 1) / (MAX_LEVEL - 1), cfg.spinTiltEnabled, cfg.spinReverseEnabled);
     this.orientToStart(cfg);
     this.updateHud();
-    this.ui.hideLoading();
   }
 
   private orientToStart(cfg: LevelConfig): void {
@@ -571,6 +611,18 @@ export class Game {
   // =============================================================== unlocks & tutorials
 
   private async runTutorialsForLevel(): Promise<void> {
+    try {
+      await this.runTutorialsForLevelInner();
+    } catch (e) {
+      // `Tutorial.stop()` (called when the level ended mid-tutorial, see `playLevel`)
+      // rejects the in-flight `tutorial.run()` with `TutorialAborted` so it can't
+      // linger forever — that is an expected control-flow signal, not an error: the
+      // level is already over, so just stop showing tutorials.
+      if (!isTutorialAborted(e)) throw e;
+    }
+  }
+
+  private async runTutorialsForLevelInner(): Promise<void> {
     // Dynamic, level-derived unlocks (item #15/#13): the planet rotates every
     // `SLOT_LENGTH` levels and the layer count grows on a global curve, so
     // neither has a fixed level number in `unlocks.ts` — detect the moment

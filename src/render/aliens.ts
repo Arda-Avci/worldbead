@@ -20,6 +20,9 @@ import { easeInOutCubic } from './easing';
 const BLOOM_LAYER = 1;
 const MAX_SHIPS = 6;
 const LIGHT_COUNT = 10;
+/** Shared scratch constants (production review item #7): the laser's local up axis and the charge-phase ring color. */
+const LASER_LOCAL_UP = new THREE.Vector3(0, 1, 0);
+const CHARGE_COLOR = new THREE.Color(0xff5522);
 /** Generous, phone-friendly tap radius (world units) around a ship's own position — see `raycastShips`. Roughly matches `SHIP_HIT_RADIUS` in `src/game/Game.ts`, which sizes the invasion tutorial's spotlight to it. */
 const HIT_RADIUS = 0.2;
 
@@ -548,7 +551,8 @@ export class AlienInvasionRenderer {
       const phase = (i / LIGHT_COUNT) * Math.PI * 2;
       const pulse = 0.3 + 0.7 * Math.max(0, Math.sin(t * 2.4 - phase * 2));
       const mat = slot.lightRing[i].material as THREE.SpriteMaterial;
-      this.tmpColor.setHex(0x59e0ff).lerp(new THREE.Color(0xff5522), chargeProgress);
+      // CHARGE_COLOR is a shared scratch — allocating a Color per light per frame is pure GC churn (production review item #7).
+      this.tmpColor.setHex(0x59e0ff).lerp(CHARGE_COLOR, chargeProgress);
       mat.color.copy(this.tmpColor);
       mat.opacity = 0.25 + pulse * 0.7;
     }
@@ -585,11 +589,13 @@ export class AlienInvasionRenderer {
     const groupScale = slot.group.getWorldScale(this.tmpV4).x || 1;
     slot.laser.scale.set(1, len / groupScale, 1);
     slot.group.getWorldQuaternion(this.tmpQ2).invert();
-    const localDir = dirWorld.clone().normalize().applyQuaternion(this.tmpQ2);
-    this.tmpQ.setFromUnitVectors(new THREE.Vector3(0, 1, 0), localDir);
+    // dirWorld (tmpV2) and midWorld (tmpV3) are both consumed by now — reuse them rather
+    // than cloning per frame (production review item #7).
+    const localDir = dirWorld.normalize().applyQuaternion(this.tmpQ2);
+    this.tmpQ.setFromUnitVectors(LASER_LOCAL_UP, localDir);
     slot.laser.quaternion.copy(this.tmpQ);
 
-    slot.impactFlash.position.copy(slot.group.worldToLocal(slot.laserTarget.clone()));
+    slot.impactFlash.position.copy(slot.group.worldToLocal(this.tmpV3.copy(slot.laserTarget)));
     const flashU = u < 0.5 ? u / 0.5 : 1 - (u - 0.5) / 0.5;
     slot.impactFlashMat.opacity = flashU;
     slot.impactFlash.scale.setScalar((0.02 + flashU * 0.05) / groupScale);

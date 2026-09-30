@@ -44,12 +44,15 @@ export function applyEarthDayNightPatch(material: THREE.MeshStandardMaterial, ni
   material.customProgramCacheKey = () => 'earth-day-night-ocean';
 }
 
+/** Scratch for `updateEarthSunDir` — it runs every frame, so no per-call clones (production review item #7). */
+const tmpSunDirView = new THREE.Vector3();
+
 /** Updates the sun-direction-in-view-space uniform used by the Earth shader patch. */
 export function updateEarthSunDir(material: THREE.MeshStandardMaterial, sunDirWorld: THREE.Vector3, camera: THREE.Camera): void {
   const shader = (material as any).userData.shaderRef as THREE.WebGLProgramParametersWithUniforms | undefined;
   if (!shader) return;
-  const v = sunDirWorld.clone().transformDirection(camera.matrixWorldInverse).normalize();
-  (shader.uniforms.uSunDirView.value as THREE.Vector3).copy(v);
+  tmpSunDirView.copy(sunDirWorld).transformDirection(camera.matrixWorldInverse).normalize();
+  (shader.uniforms.uSunDirView.value as THREE.Vector3).copy(tmpSunDirView);
 }
 
 /** Fresnel rim-glow atmosphere shell, shared by all planets (color/intensity differ per planet). */
