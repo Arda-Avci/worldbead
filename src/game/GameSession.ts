@@ -22,11 +22,24 @@ export const RETRY_COST = 100;
 export const CONTINUE_COST = 500;
 export const CONTINUE_EXTRA_PROBES = 5;
 
+/** Consecutive matching probe hits that earn a streak reward (GDD §5b); unlocked at `STREAK_LEVEL`. */
+export const STREAK_TARGET = 5;
+
+/** Level-size tier from the shot budget (GDD §5b "level size label"). */
+export type LevelSize = 'small' | 'medium' | 'large' | 'extreme';
+export function levelSizeTier(probesTotal: number): LevelSize {
+  if (probesTotal <= 10) return 'small';
+  if (probesTotal <= 20) return 'medium';
+  if (probesTotal <= 35) return 'large';
+  return 'extreme';
+}
+
 export type SessionEvent =
   | { type: 'fire'; result: 'hit'; color: number; poppedCount: number; stardustEarned: number; combo: boolean }
   | { type: 'fire'; result: 'miss'; color: number }
   | { type: 'power'; power: PowerId; poppedCount: number }
   | { type: 'swap' }
+  | { type: 'streakReward'; reward: PowerId | 'probe' }
   | { type: 'win'; stars: 1 | 2 | 3; stardustEarned: number; bonusPower: PowerId | null }
   | { type: 'lose' }
   | { type: 'purchase'; power: PowerId; ok: boolean };
@@ -40,11 +53,19 @@ export interface SessionInit {
   powers: Record<PowerId, PowerState>;
   /** Total level wins so far (before this level); every 5th grants a bonus power. */
   winsSoFar: number;
+  /** Streak rewards active (from `STREAK_LEVEL`, never in a bonus round). */
+  streakEnabled?: boolean;
+  /** Bonus round: unlimited probes, every popped bead = 1 stardust, no stars/fail/streak. */
+  bonus?: boolean;
 }
 
 export class GameSession {
   readonly probesTotal: number;
   probes: number;
+  /** Current run of consecutive matching probe hits (0..STREAK_TARGET-1). */
+  streak = 0;
+  private readonly streakEnabled: boolean;
+  private readonly bonus: boolean;
   queue: [number | null, number | null] = [null, null];
   prismArmed = false;
   stardust: number;
@@ -57,7 +78,9 @@ export class GameSession {
     // Owner requirement: give the player exactly 2 more shots than the minimum required to clear
     // the level, where the minimum is one shot per connected color region (playing optimally).
     const EXTRA_SHOTS = 2;
-    this.probesTotal = Math.max(1, opts.regions) + EXTRA_SHOTS;
+    this.bonus = !!opts.bonus;
+    this.streakEnabled = !!opts.streakEnabled && !this.bonus;
+    this.probesTotal = this.bonus ? Infinity : Math.max(1, opts.regions) + EXTRA_SHOTS;
     this.probes = this.probesTotal;
     this.stardust = opts.stardust;
     this.powers = opts.powers;
@@ -115,7 +138,8 @@ export class GameSession {
     const current = this.queue[0];
     if (current === null) return [];
 
-    const matches = this.prismArmed || color === current;
+    const viaPrism = this.prismArmed;
+    const matches = viaPrism || color === current;
     this.probes--;
     const events: SessionEvent[] = [];
 
@@ -123,15 +147,38 @@ export class GameSession {
       const region = this.globe.region(shellId, index);
       const poppedCount = this.globe.pop(region);
       this.prismArmed = false;
-      const stardustEarned = Math.max(1, Math.ceil(poppedCount / 12));
+      const stardustEarned = this.bonus ? poppedCount : Math.max(1, Math.ceil(poppedCount / 12));
       this.stardust += stardustEarned;
       events.push({ type: 'fire', result: 'hit', color, poppedCount, stardustEarned, combo: poppedCount >= 60 });
+      if (!viaPrism) this.registerHit(events);
     } else {
       events.push({ type: 'fire', result: 'miss', color: current });
+      this.registerMiss();
     }
     this.advanceQueue();
     events.push(...this.checkOutcome());
     return events;
+  }
+
+  /** Streak bookkeeping (GDD §5b): a matching probe hit extends it, a miss resets it; powers and prism-assisted shots are neutral. */
+  private registerHit(events: SessionEvent[]): void {
+    if (!this.streakEnabled) return;
+    this.streak++;
+    if (this.streak < STREAK_TARGET) return;
+    this.streak = 0;
+    const unlocked = (Object.keys(this.powers) as PowerId[]).filter((p) => this.powers[p].unlocked);
+    if (unlocked.length > 0) {
+      const power = unlocked[Math.floor(this.rng() * unlocked.length)];
+      this.powers[power].charges++;
+      events.push({ type: 'streakReward', reward: power });
+    } else {
+      this.probes++;
+      events.push({ type: 'streakReward', reward: 'probe' });
+    }
+  }
+
+  private registerMiss(): void {
+    this.streak = 0;
   }
 
   meteor(point: Vec3, radius: number): SessionEvent[] {
@@ -183,6 +230,7 @@ export class GameSession {
     if (this.ended) return [];
     if (this.globe.aliveCount() === 0) {
       this.ended = 'win';
+      if (this.bonus) return [{ type: 'win', stars: 1, stardustEarned: 0, bonusPower: null }];
       const leftFrac = this.probes / this.probesTotal;
       const stars: 1 | 2 | 3 = leftFrac >= 0.4 ? 3 : leftFrac >= 0.15 ? 2 : 1;
       const stardustEarned = this.probes * 5;

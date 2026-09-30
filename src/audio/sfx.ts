@@ -381,6 +381,19 @@ function starGain(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
   return maxEnd + 0.03;
 }
 
+/** Streak reward (GDD §5b): a bright rising four-note chime with a shimmer on top. */
+function streak(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
+  const notes = [784, 987.8, 1174.7, 1568];
+  let maxEnd = 0;
+  notes.forEach((f, idx) => {
+    const start = t + idx * 0.07;
+    const d = playTone(ctx, dest, { type: 'triangle', freq: f, start, attack: 0.004, decay: 0.2, peak: 0.3, release: 0.08 });
+    playTone(ctx, dest, { type: 'sine', freq: f * 2, start: start + 0.01, attack: 0.004, decay: 0.16, peak: 0.1, release: 0.06 });
+    maxEnd = Math.max(maxEnd, start - t + d);
+  });
+  return maxEnd + 0.05;
+}
+
 function win(ctx: BaseAudioContext, dest: AudioNode, t: number, planet: PlanetId): number {
   const mood = PLANET_MOODS[planet];
   const base = mood.root * RATIO_OCTAVE;
@@ -713,6 +726,8 @@ export function buildSfx(
       return lose(ctx, dest, startTime, planet);
     case 'warp':
       return warp(ctx, dest, startTime);
+    case 'streak':
+      return streak(ctx, dest, startTime);
     case 'shipArrive':
       return shipArrive(ctx, dest, startTime);
     case 'laserCharge':

@@ -11,8 +11,8 @@ import { isTutorialAborted, Tutorial, type ScreenCircle } from '../ui/tutorial';
 import { haptic } from '../ui/haptic';
 import type { PowerButtonState, Settings } from '../ui/types';
 import { BeadGlobe, type TextureMap, type TextureName } from './BeadGlobe';
-import { CONTINUE_COST, GameSession, RETRY_COST, type SessionEvent } from './GameSession';
-import { getLevel, MAX_LEVEL, type LevelConfig } from './levels';
+import { CONTINUE_COST, GameSession, levelSizeTier, RETRY_COST, STREAK_TARGET, type SessionEvent } from './GameSession';
+import { getBonusLevel, getLevel, isBonusAfterLevel, MAX_LEVEL, STREAK_LEVEL, type LevelConfig } from './levels';
 import { mulberry32 } from './noise';
 import { PLANETS, type PlanetId } from './planets';
 import { loadProgress, saveProgress, type Progress } from './progress';
@@ -63,6 +63,8 @@ const PRISM_PROBE_COLOR = 0xd9c7ff;
 const METEOR_RADIUS = 0.3; // globe-local units
 const COMET_HALF_WIDTH = 0.12; // |dot| band half-width
 const ROTATE_TUTORIAL_DEG = 60;
+/** Bonus round length (GDD §5b). */
+const BONUS_SECONDS = 30;
 const AXIS_Y = new THREE.Vector3(0, 1, 0);
 const AXIS_X = new THREE.Vector3(1, 0, 0);
 
@@ -75,6 +77,7 @@ const UNLOCK_INFO: Partial<Record<UnlockId, { icon: string; name: string; descri
   cloudLayer: { icon: 'star', name: S.unlockName.cloudLayer, description: S.unlockDescription.cloudLayer },
   newLayer: { icon: 'star', name: S.unlockName.newLayer, description: S.unlockDescription.newLayer },
   cloudDrift: { icon: 'star', name: S.unlockName.cloudDrift, description: S.unlockDescription.cloudDrift },
+  streak: { icon: 'streak', name: S.unlockName.streak, description: S.unlockDescription.streak },
   invasion: { icon: 'ship', name: S.unlockName.invasion, description: S.unlockDescription.invasion },
 };
 
@@ -167,6 +170,11 @@ export class Game {
   private lastFireCrackleAt = -10;
   private pendingInvasionResolve: (() => void) | null = null;
 
+  // level-size banner / bonus round (GDD §5b)
+  /** The session the size banner was last shown for, so a "continue after loss" resume doesn't repeat it. */
+  private bannerSession: GameSession | null = null;
+  private bonusSeconds = BONUS_SECONDS;
+
   private state: FlowState = 'boot';
   private acceptInput = false;
   private armedPower: PowerId | null = null;
@@ -244,6 +252,12 @@ export class Game {
     // branch (and the method it calls) is stripped from production builds.
     if (import.meta.env.DEV) {
       (window as unknown as { __wbQA: unknown }).__wbQA = {
+        // QA-only: shortens the bonus round (shipped value is BONUS_SECONDS = 30).
+        setBonusSeconds: (n: number) => {
+          this.bonusSeconds = n;
+        },
+        // QA-only: previews the banner styling (e.g. the hot "Extreme" variant) without loading a huge level.
+        previewBanner: (tier: 'small' | 'medium' | 'large' | 'extreme') => this.ui.showBanner(S.level(this.cfg.level), S.levelSize[tier], tier === 'extreme', 60000),
         targetForCurrentProbe: () => this.qaTargetForCurrentProbe(),
         targetsForCurrentProbe: (n: number) => this.qaTargetsForCurrentProbe(n),
         queueState: () => (this.session ? { queue: [...this.session.queue], probes: this.session.probes, probesTotal: this.session.probesTotal, prismArmed: this.session.prismArmed, isOver: this.session.isOver } : null),
@@ -392,6 +406,10 @@ export class Game {
       nextPlanetName: changingPlanet ? PLANET_NAMES[nextCfg.planet] : undefined,
     });
 
+    // GDD §5b: a bonus round follows every win of a level whose number ends in 5, before the next
+    // level is prepared (and before any planet-change warp, though a planet never changes after a 5).
+    if (isBonusAfterLevel(this.cfg.level)) await this.playBonusRound();
+
     if (changingPlanet && nextLevelNum !== this.cfg.level) {
       this.ui.setHudVisible(false);
       await this.scene.warp(1.8);
@@ -404,6 +422,71 @@ export class Game {
     this.globe!.group.visible = true;
     void this.globe!.assemble(0.8);
     await this.wait(850);
+  }
+
+  /**
+   * GDD §5b bonus round: the current planet as one big-bead shell, unlimited probes, a timer,
+   * every popped bead = 1 stardust (added to `progress` through `session.stardust`). No stars,
+   * no fail, no tutorials; the level number is unchanged. Clearing the board ends it early.
+   */
+  private async playBonusRound(): Promise<void> {
+    const startStardust = this.progress.stardust;
+    await this.prepareLevel(this.cfg.level, true);
+    await this.scene.flyTo('gameplay', 0.9);
+    this.globe!.group.visible = true;
+    void this.globe!.assemble(0.8);
+    await this.wait(850);
+    this.ui.setBonusMode(true);
+    this.ui.setBonusTime(this.bonusSeconds);
+    this.updateHud();
+
+    const introKey = 'bonus-intro';
+    if (!this.progress.seenTutorials.includes(introKey)) {
+      await this.ui.showUnlock({ icon: 'stardust', name: S.bonusRound, description: S.bonusIntro, ctaLabel: S.bonusGo });
+      this.progress.seenTutorials.push(introKey);
+      saveProgress(this.progress);
+    } else {
+      this.ui.showBanner(S.level(this.cfg.level), S.bonusRound);
+      await this.wait(700);
+    }
+
+    this.state = 'playing';
+    this.acceptInput = true;
+    const ended = new Promise<void>((res) => {
+      this.resolveLevelEnd = () => res();
+    });
+    let timer = 0;
+    const timeUp = new Promise<void>((res) => {
+      const t0 = performance.now();
+      timer = window.setInterval(() => {
+        const left = this.bonusSeconds - (performance.now() - t0) / 1000;
+        this.ui.setBonusTime(left);
+        if (left <= 0) res();
+      }, 100);
+    });
+    await Promise.race([ended, timeUp]);
+    window.clearInterval(timer);
+    this.resolveLevelEnd = null;
+    this.acceptInput = false;
+    this.state = 'resolving';
+    this.armedPower = null;
+
+    void this.globe!.burstAway(1.0);
+    this.scene.setBodyRevealed(true);
+    await this.scene.flyTo('hero', 1.1);
+    this.audio.play('win');
+    this.syncProgressFromSession();
+    this.ui.setStardust(this.progress.stardust);
+    await this.ui.showBonusResult(this.progress.stardust - startStardust);
+    this.ui.setBonusMode(false);
+  }
+
+  /** Level-size banner (GDD §5b): shown once per level, after that level's tutorials/cards, as play begins. */
+  private showLevelSizeBanner(): void {
+    if (!this.session || this.session.isOver || this.cfg.bonus || this.bannerSession === this.session) return;
+    this.bannerSession = this.session;
+    const tier = levelSizeTier(this.session.probesTotal);
+    this.ui.showBanner(S.level(this.cfg.level), S.levelSize[tier], tier === 'extreme');
   }
 
   private async playLevel(): Promise<Extract<SessionEvent, { type: 'win' } | { type: 'lose' }>> {
@@ -420,6 +503,7 @@ export class Game {
     });
     await Promise.race([this.runTutorialsForLevel(), endPromise]);
     this.tutorial.stop();
+    this.showLevelSizeBanner();
     const ev = await endPromise;
     this.acceptInput = false;
     this.state = 'resolving';
@@ -484,9 +568,9 @@ export class Game {
 
   // =============================================================== level build
 
-  private async prepareLevel(levelNumber: number): Promise<void> {
+  private async prepareLevel(levelNumber: number, bonus = false): Promise<void> {
     const token = ++this.buildToken;
-    const cfg = getLevel(levelNumber);
+    const cfg = bonus ? getBonusLevel(levelNumber) : getLevel(levelNumber);
     const planetDef = PLANETS[cfg.planet];
     this.ui.showLoading(PLANET_NAMES[cfg.planet]);
 
@@ -515,7 +599,7 @@ export class Game {
       console.error('[WorldBead] level load failed:', err);
       this.ui.hideLoading();
       await this.ui.showLoadError();
-      return this.prepareLevel(levelNumber);
+      return this.prepareLevel(levelNumber, bonus);
     }
   }
 
@@ -561,6 +645,8 @@ export class Game {
       stardust: this.progress.stardust,
       powers,
       winsSoFar: this.progress.totalWins,
+      streakEnabled: cfg.level >= STREAK_LEVEL,
+      bonus: cfg.bonus,
     });
     this.cfg = cfg;
     this.armedPower = null;
@@ -573,7 +659,7 @@ export class Game {
     this.invasionElapsed = 0;
     this.lastFireCrackleAt = -10;
     const invasionCfg = invasionConfigForLevel(cfg.level);
-    if (invasionCfg) this.invasion = new InvasionController(globe, invasionCfg);
+    if (invasionCfg && !cfg.bonus) this.invasion = new InvasionController(globe, invasionCfg);
 
     this.scene.configureSpin(cfg.seed, cfg.autoSpinEnabled, (cfg.level - 1) / (MAX_LEVEL - 1), cfg.spinTiltEnabled, cfg.spinReverseEnabled);
     this.orientToStart(cfg);
@@ -1138,6 +1224,12 @@ export class Game {
         }
         case 'swap':
           break;
+        case 'streakReward':
+          this.ui.showToast(ev.reward === 'probe' ? S.streakRewardShot : S.streakRewardPower(POWER_NAMES[ev.reward]));
+          this.audio.play('streak');
+          haptic('medium');
+          this.ui.flashStreakReward();
+          break;
         case 'purchase':
           this.ui.showToast(ev.ok ? S.purchased : S.notEnoughStardust);
           break;
@@ -1233,7 +1325,8 @@ export class Game {
     }
     const c0 = this.session.queue[0];
     const c1 = this.session.queue[1];
-    this.ui.setProbeDock(c0 != null ? { color: c0, count: this.session.probes } : null, c1 != null ? { color: c1 } : null, this.session.prismArmed);
+    this.ui.setStreak(this.cfg.level >= STREAK_LEVEL && !this.cfg.bonus ? this.session.streak : null, STREAK_TARGET);
+    this.ui.setProbeDock(c0 != null ? { color: c0, count: this.cfg.bonus ? undefined : this.session.probes } : null, c1 != null ? { color: c1 } : null, this.session.prismArmed);
     this.updatePowerButtons();
   }
 

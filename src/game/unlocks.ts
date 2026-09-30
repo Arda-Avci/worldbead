@@ -2,10 +2,10 @@
 
 export type PowerId = 'meteor' | 'prism' | 'solarFlare' | 'comet';
 
-import { FIRST_CLOUD_LEVEL } from './levels';
+import { FIRST_CLOUD_LEVEL, STREAK_LEVEL } from './levels';
 import { INVASION_FIRST_LEVEL } from './invasion';
 
-export type UnlockId = 'fire' | 'rotate' | 'swap' | PowerId | 'cloudLayer' | 'newPlanet' | 'newLayer' | 'cloudDrift' | 'invasion';
+export type UnlockId = 'fire' | 'rotate' | 'swap' | PowerId | 'cloudLayer' | 'newPlanet' | 'newLayer' | 'cloudDrift' | 'invasion' | 'streak';
 
 export interface UnlockEntry {
   level: number;
@@ -18,6 +18,7 @@ export const UNLOCKS: UnlockEntry[] = [
   { level: 1, id: 'fire', tutorial: 'fire' },
   { level: 1, id: 'rotate', tutorial: 'rotate' },
   { level: 3, id: 'swap', tutorial: 'swap' },
+  { level: STREAK_LEVEL, id: 'streak', tutorial: 'streak' },
   { level: 6, id: 'meteor', tutorial: 'meteor' },
   { level: 12, id: 'prism', tutorial: 'prism' },
   { level: 25, id: 'solarFlare', tutorial: 'solarFlare' },

@@ -889,3 +889,103 @@
   .wb-power-btn { width: 46px; height: 46px; }
   .wb-powerbar { gap: 7px; }
 }
+
+/* ------------------------------------------- streak pips / bonus / banner (GDD §5b) */
+
+.wb-streak {
+  position: absolute;
+  left: 50%;
+  bottom: calc(96px + 76px + 12px + var(--wb-safe-b));
+  transform: translateX(-50%);
+  display: flex;
+  gap: 7px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--wb-bg-glass);
+  border: 1px solid var(--wb-edge);
+  pointer-events: none;
+  z-index: 55;
+}
+.wb-streak-pip {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  transition: background 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+.wb-streak-pip.wb-on {
+  background: var(--wb-stardust);
+  border-color: #fff3c9;
+  box-shadow: 0 0 10px rgba(255, 209, 102, 0.85);
+  transform: scale(1.12);
+}
+.wb-streak-reset { animation: wb-streak-shake 0.35s ease; }
+@keyframes wb-streak-shake {
+  0%, 100% { transform: translateX(-50%); }
+  25% { transform: translateX(calc(-50% - 5px)); }
+  75% { transform: translateX(calc(-50% + 5px)); }
+}
+.wb-streak-flash { animation: wb-streak-flash 0.8s ease; }
+.wb-streak-flash .wb-streak-pip.wb-on { background: #fff; box-shadow: 0 0 16px var(--wb-stardust), 0 0 28px var(--wb-accent); }
+@keyframes wb-streak-flash {
+  0%, 100% { transform: translateX(-50%) scale(1); }
+  30% { transform: translateX(-50%) scale(1.3); }
+}
+
+.wb-bonus-timer {
+  position: absolute;
+  left: 50%;
+  bottom: calc(96px + 76px + 12px + var(--wb-safe-b));
+  transform: translateX(-50%);
+  display: none;
+  min-width: 92px;
+  height: 46px;
+  border-radius: 999px;
+  place-items: center;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--wb-stardust);
+  text-shadow: 0 0 14px rgba(255, 209, 102, 0.6);
+  pointer-events: none;
+  z-index: 55;
+}
+.wb-bonus .wb-bonus-timer { display: grid; }
+.wb-bonus-timer.wb-low { color: var(--wb-danger); text-shadow: 0 0 14px rgba(255, 107, 107, 0.7); }
+.wb-bonus .wb-powerbar, .wb-bonus .wb-streak { display: none !important; }
+
+.wb-banner {
+  position: absolute;
+  left: 50%;
+  top: 30%;
+  transform: translate(-50%, -10px) scale(0.96);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 12px 28px;
+  border-radius: var(--wb-radius-lg);
+  background: var(--wb-bg-glass-strong);
+  border: 1px solid var(--wb-edge-bright);
+  box-shadow: var(--wb-shadow-panel), 0 0 30px rgba(106, 210, 255, 0.25);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 56;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.wb-banner.wb-show { opacity: 1; transform: translate(-50%, 0) scale(1); }
+.wb-banner-top { font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--wb-text-dim); }
+.wb-banner-main {
+  font-family: 'Orbitron', sans-serif;
+  font-size: clamp(22px, 7vw, 30px);
+  font-weight: 700;
+  color: var(--wb-accent);
+  text-shadow: 0 0 18px rgba(106, 210, 255, 0.6);
+}
+.wb-banner.wb-hot { border-color: rgba(255, 120, 60, 0.75); box-shadow: var(--wb-shadow-panel), 0 0 34px rgba(255, 90, 40, 0.55); }
+.wb-banner.wb-hot .wb-banner-main { color: #ff7a3c; text-shadow: 0 0 18px rgba(255, 90, 40, 0.85), 0 0 36px rgba(255, 50, 30, 0.5); }
+.wb-banner.wb-hot .wb-banner-top { color: #ffb08a; }
