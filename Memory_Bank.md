@@ -2303,3 +2303,65 @@ figures are computed, not estimated). Headline items:
 No code was changed this session. Fix order proposal when the owner
 approves: G1+G2+G4 together (one coherent pass over GameSession
 budget/stars/lose logic), then G3 (camera), then G5-G7.
+
+## Pearl Gem mechanics adapted (owner decision, 2026-09-30) — GDD §5b
+
+Owner reviewed a Pearl Gem decompile analysis (project file `notes/pearlgem-analiz.md`)
+and picked: streak reward, falling fragments, real satellites, planet
+obstacles, level size label, bonus round. Explicitly rejected: gem/pearl
+container meta, spiral/stripe color patterns (colors always come from the
+real planet texture), drag-to-aim. Layered shells stay as they were.
+Built by three parallel worktree agents, merged by the orchestrator.
+
+- **Streak** (`GameSession`): `STREAK_TARGET = 5` matching probe hits in a
+  row (armor cracks count; prism-assisted shots are neutral; a miss resets)
+  → free charge of a random unlocked power, else +1 probe. Event
+  `streakReward`. 5 pips above the probe dock from `STREAK_LEVEL = 4`
+  (`levels.ts`, avoids an import cycle with `unlocks.ts`), card at level 4.
+- **Falling fragments** (`BeadGlobe.pop` → `dropFragments`): after a pop,
+  same-shell components (any color) touching the popped beads fall when
+  fully exposed and ≤ `FRAGMENT_MAX = 0.12` of the shell's starting count.
+  `pop()` returns popped + fallen. No cross-shell cascade (the old
+  "unsupported" cascade stays removed). First-per-level toast via
+  `takeFallenCount()`.
+- **Armor obstacles**: `LevelConfig.obstacle` on the outermost non-cloud
+  shell (`shells[0]`). Earth ice from `ICE_FIRST_LEVEL = 53` (armor 1,
+  |lat| ≥ 62°); Moon crust from `CRUST_FIRST_LEVEL = 64` (armor 2, 1–3
+  seeded caps, 0.42 rad). Matching hit (incl. prism) → `crack` event, −1
+  armor on the region's armored beads, probe spent; powers ignore armor;
+  fire burns armor off. Budget: `probesTotal = regions + 2 + armorProbes`
+  (sum over armored regions of max armor, coverage-blind — may be slightly
+  short when Earth clouds cover ice). Visuals are instance-color tints +
+  1.12× scale, not a shader.
+- **Level size label**: `levelSizeTier(probesTotal)` ≤10/≤20/≤35/else
+  Extreme, banner right after the level's cards; not repeated on Continue.
+- **Bonus round**: after winning any level ending in 5 (`isBonusAfterLevel`),
+  `getBonusLevel()` = same planet, 600 beads, K 3, one shell, no clouds, no
+  obstacle, `bonus: true`; unlimited probes, 1 stardust per bead,
+  `BONUS_SECONDS = 30`, no stars/fail, no invasion, no satellites. Runs in
+  `onWin` between the level-complete card and the warp/next level; progress
+  is saved before it (reload mid-bonus skips it). seenTutorials keys
+  `4-streak`, `bonus-intro`.
+- **Real satellites** (`src/game/satellites.ts` rules,
+  `src/render/satellites.ts` meshes): from `SATELLITE_FIRST_LEVEL = 17`
+  (always) then 50 % seeded per level; roster Earth ISS/Hubble, Moon LRO,
+  Mars MRO/Mars Express, Venus Akatsuki, Jupiter Juno. One 9 s pass on the
+  front half of a tilted orbit at 1.6× globe radius; tap hit-tested before
+  ships/globe (≥40 px); catch = no probe, +40 stardust or a free power
+  charge (seeded per level), real-fact toast. Timer pauses while cards /
+  tutorials run (`tutorialBusy`). Level-17 tutorial pass is 16 s and
+  relaunches until caught. `armSatellite(level, planet, bonus)` in
+  `buildLevel`.
+- Dev-only `__wbQA` hooks added: `armorState`, `armoredTarget`,
+  `fragmentsFallenTotal`, `timePops`, `setBonusSeconds`, `previewBanner`,
+  `satelliteState`, `forceSatellite`, `satelliteAdvance`, `satellitePlan`.
+- Verified headless (swiftshader): build clean; levels 1/4/5/17/53/64 load
+  with no errors; L53 probesTotal 16 = 12 + 2 + 2, L64 20 = 12 + 2 + 6;
+  L5 win → bonus (shortened timer) → L6 with stardust saved; agents also
+  verified streak reward at L4, satellite catch at L17, crack→pop at 53/64.
+- Not verified: real Large/Extreme levels headless, the full 30 s bonus,
+  crack-driven tutorial completion, satellite cut-off at level end,
+  cracked-crust tint on screen. Headless runs ~1.6 fps; use the QA hooks.
+- Open: Mars/Venus/Jupiter have no obstacle yet (owner only asked for the
+  Earth/Moon examples). Pre-existing G1–G8 items in `docs/GAMEPLAY_REVIEW.md`
+  are untouched (G3 camera framing still makes layered globes overflow).
