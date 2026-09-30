@@ -10,6 +10,7 @@
  * harder than the previous visit to that same planet.
  */
 import type { PlanetId } from './planets';
+import { mulberry32 } from './noise';
 
 /** Planets visit in this fixed order, repeating forever; every 5th slot revisits Earth, more detailed each time. */
 export const CYCLE: PlanetId[] = ['earth', 'moon', 'mars', 'venus', 'jupiter'];
@@ -43,6 +44,19 @@ export interface ExtraLayerConfig {
   beadCount: number;
   k: number;
 }
+
+/**
+ * GDD §5b "Planet obstacles": armor hit points on beads of the outermost non-cloud shell.
+ * `ice` = Earth polar caps (every bead with |lat| >= `minAbsLatDeg`); `crust` = `regionCount`
+ * seeded asteroid-crust patches (angular radius `capRadiusRad`, centers derived from `seed`).
+ */
+export type ObstacleConfig =
+  | { kind: 'ice'; armor: number; minAbsLatDeg: number }
+  | { kind: 'crust'; armor: number; regionCount: number; capRadiusRad: number };
+
+/** First levels of each obstacle (Earth polar ice from 53, Moon asteroid crust from 64; then every later level of that planet). */
+export const ICE_FIRST_LEVEL = 53;
+export const CRUST_FIRST_LEVEL = 64;
 
 export interface LevelConfig {
   level: number;
@@ -84,6 +98,8 @@ export interface LevelConfig {
    */
   regionTarget: number;
   seed: number;
+  /** GDD §5b: this level's armor obstacle on the outermost non-cloud shell, or null. */
+  obstacle: ObstacleConfig | null;
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -194,6 +210,16 @@ function layerCountForLevel(lv: number): number {
   return n;
 }
 
+/** Deterministic from the level seed (GDD §5b table). */
+function obstacleForLevel(planet: PlanetId, lv: number, seed: number): ObstacleConfig | null {
+  if (planet === 'earth' && lv >= ICE_FIRST_LEVEL) return { kind: 'ice', armor: 1, minAbsLatDeg: 62 };
+  if (planet === 'moon' && lv >= CRUST_FIRST_LEVEL) {
+    const rng = mulberry32(seed ^ 0x7c3a91);
+    return { kind: 'crust', armor: 2, regionCount: 1 + Math.floor(rng() * 3), capRadiusRad: 0.42 };
+  }
+  return null;
+}
+
 export function getLevel(level: number): LevelConfig {
   const lv = clamp(Math.floor(level), 1, MAX_LEVEL);
   const slotIndex = Math.floor((lv - 1) / SLOT_LENGTH);
@@ -203,6 +229,7 @@ export function getLevel(level: number): LevelConfig {
   const visitNumber = Math.floor(slotIndex / CYCLE.length);
   const nextPlanet = CYCLE[(slotIndex + 1) % CYCLE.length];
 
+  const seed = lv * 7919 + 13;
   const progress = (lv - 1) / (MAX_LEVEL - 1);
   const curve = CURVES[planet];
 
@@ -261,6 +288,7 @@ export function getLevel(level: number): LevelConfig {
     spinTiltEnabled: lv >= SPIN_TILT_LEVEL,
     spinReverseEnabled: lv >= SPIN_REVERSE_LEVEL,
     regionTarget,
-    seed: lv * 7919 + 13,
+    seed,
+    obstacle: obstacleForLevel(planet, lv, seed),
   };
 }

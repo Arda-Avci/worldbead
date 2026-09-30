@@ -10,6 +10,7 @@ const SFX_NAMES: SfxName[] = [
   'pop',
   'bigPop',
   'miss',
+  'crack',
   'swap',
   'powerMeteor',
   'powerPrism',

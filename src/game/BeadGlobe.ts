@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import { mulberry32, fbm3 } from './noise';
 import { PLANETS } from './planets';
-import type { LevelConfig } from './levels';
+import type { LevelConfig, ObstacleConfig } from './levels';
 import type { ImageDataLike } from './texture';
 import { sampleEquirect } from './texture';
 import type { BeadRef, GlobeAdapter, PopEvent, Vec3 } from './types';
@@ -80,6 +80,15 @@ interface Shell {
   fireColorIdx?: number;
   /** Alien invasion: bead index -> `animClock` time it was ignited, for the brief bright "just caught fire" pulse. Cleared once the pulse fades. */
   ignitedAt?: Map<number, number>;
+  /**
+   * GDD §5b planet obstacles (outermost non-cloud shell only): per-bead armor points left
+   * (`armor`, 0 = none/cleared), the starting value (`armorMax`), the obstacle look, and the
+   * bead's original instance color (rgb triplets, filled for armored beads) the tint is built on.
+   */
+  armor?: Uint8Array;
+  armorMax?: Uint8Array;
+  armorKind?: 'ice' | 'crust';
+  armorBaseRgb?: Float32Array;
 }
 
 interface PopAnim {
@@ -101,6 +110,15 @@ const FIRE_PULSE_DURATION = 0.45;
 const tmpQ = new THREE.Quaternion();
 const tmpS = new THREE.Vector3();
 const tmpC = new THREE.Color();
+/** GDD §5b armor tints (see `BeadGlobe.tintArmored`). */
+const ICE_TINT = new THREE.Color(0x9fdcff);
+/** Armored beads render a bit bigger (chunkier silhouette) until their armor is gone. */
+const ARMOR_SCALE = 1.12;
+const CRUST_TINT = new THREE.Color(0x3b3b40);
+const CRUST_CRACKED_TINT = new THREE.Color(0x6a5a52);
+const CRUST_CRACK_GLOW = new THREE.Color(0xff9a4d);
+/** GDD §5b falling fragments: a same-shell component of at most this share of the shell's starting beads falls. */
+const FRAGMENT_MAX = 0.12;
 
 function dirToLonLat(x: number, y: number, z: number): [number, number] {
   const lat = Math.asin(Math.max(-1, Math.min(1, y))) * RAD;
@@ -882,6 +900,10 @@ export class BeadGlobe implements GlobeAdapter {
   /** Item #19: the clouds shell's dedicated material (cloned from the shared bead material), disposed separately. */
   private cloudMaterial: THREE.Material | null = null;
   /** Item #19: static info needed to recompute cloud occlusion as the cloud mesh drifts (see `updateCloudDrift`). */
+  private readonly crackEvents: PopEvent[] = [];
+  /** GDD §5b: beads that fell as fragments since the last `takeFallenCount()`. */
+  private fallenSinceTaken = 0;
+  private lastPopped: BeadRef[] = [];
   private cloudCoverRecalc: { cloudDirs: Float32Array; cloudSpacing: number; bodyShellIndex: number; bodyDirs: Float32Array; bodySpacing: number } | null = null;
 
   constructor(cfg: LevelConfig, images: TextureMap, material: THREE.Material) {
@@ -1045,6 +1067,8 @@ export class BeadGlobe implements GlobeAdapter {
       outermostBody.coveredBy = buildCoveredBy(cloudDirs, cloudSpacing, BEAD_RADIUS_FACTOR_CLOUD, outermostBodyDirs, outermostBodySpacing, BEAD_RADIUS_FACTOR);
       this.cloudCoverRecalc = { cloudDirs, cloudSpacing, bodyShellIndex: outermostBodyIndex, bodyDirs: outermostBodyDirs, bodySpacing: outermostBodySpacing };
     }
+
+    if (cfg.obstacle) this.setupArmor(cfg.obstacle, cfg.seed);
 
     for (const s of this.shells) this.group.add(s.mesh);
   }
@@ -1349,13 +1373,67 @@ export class BeadGlobe implements GlobeAdapter {
    * region-count model, which is a gameplay-design decision, not a bug fix.
    */
   pop(beads: BeadRef[]): number {
-    return this.popInternal(beads);
+    const popped = this.popInternal(beads);
+    if (popped === 0) return 0;
+    const fallen = this.dropFragments(this.lastPopped);
+    this.fallenSinceTaken += fallen;
+    return popped + fallen;
+  }
+
+  /** GDD §5b: how many beads fell as fragments since the last call (then resets), for the first-time toast. */
+  takeFallenCount(): number {
+    const n = this.fallenSinceTaken;
+    this.fallenSinceTaken = 0;
+    return n;
+  }
+
+  /**
+   * GDD §5b falling fragments. For every shell that just lost beads: flood the alive same-shell
+   * neighbors of the popped beads into connected components (any color); a component falls when
+   * all of its beads are exposed and it holds at most `FRAGMENT_MAX` of the shell's starting beads.
+   * Only components touching this pop's beads are examined, so pre-existing small clusters (e.g.
+   * separate cloud patches) never fall at level start, and fallen beads are not re-examined (no cascade).
+   */
+  private dropFragments(popped: BeadRef[]): number {
+    const byShell = new Map<number, number[]>();
+    for (const b of popped) {
+      let arr = byShell.get(b.shellId);
+      if (!arr) byShell.set(b.shellId, (arr = []));
+      arr.push(b.index);
+    }
+    const falling: BeadRef[] = [];
+    for (const [shellId, seeds] of byShell) {
+      const shell = this.shells[shellId];
+      const limit = Math.max(1, Math.floor(shell.count * FRAGMENT_MAX));
+      const seen = new Uint8Array(shell.count);
+      for (const seed of seeds) {
+        for (let p = shell.nbrStart[seed]; p < shell.nbrStart[seed + 1]; p++) {
+          const start = shell.nbrList[p];
+          if (seen[start] || !shell.alive[start]) continue;
+          const comp = [start];
+          seen[start] = 1;
+          for (let h = 0; h < comp.length; h++) {
+            const i = comp[h];
+            for (let q = shell.nbrStart[i]; q < shell.nbrStart[i + 1]; q++) {
+              const j = shell.nbrList[q];
+              if (!seen[j] && shell.alive[j]) { seen[j] = 1; comp.push(j); }
+            }
+          }
+          if (comp.length > limit) continue;
+          let exposed = true;
+          for (const i of comp) if (this.isCovered(shell, i)) { exposed = false; break; }
+          if (exposed) for (const i of comp) falling.push({ shellId, index: i });
+        }
+      }
+    }
+    return falling.length === 0 ? 0 : this.popInternal(falling);
   }
 
   /** Marks the given beads dead and queues their FX events; skips any already-dead. Returns the count actually popped. */
   private popInternal(beads: BeadRef[]): number {
     let i = 0;
     let popped = 0;
+    this.lastPopped = [];
     for (const b of beads) {
       const shell = this.shells[b.shellId];
       if (!shell.alive[b.index]) continue;
@@ -1364,6 +1442,7 @@ export class BeadGlobe implements GlobeAdapter {
       this.popEvents.push({ position: pos, color: hex, radius: shell.beadRadius });
       shell.alive[b.index] = 0;
       this.popAnims.push({ shell, index: b.index, t0: this.animClock + Math.min(i, 40) * 0.016, dur: 0.2 });
+      this.lastPopped.push(b);
       i++;
       popped++;
     }
@@ -1406,6 +1485,7 @@ export class BeadGlobe implements GlobeAdapter {
         shell.palette.push(colorHex);
       }
       shell.colorIdx[b.index] = shell.fireColorIdx;
+      if (shell.armor) shell.armor[b.index] = 0; // fire burns the armor off (GDD §5b)
       if (!shell.ignitedAt) shell.ignitedAt = new Map();
       shell.ignitedAt.set(b.index, this.animClock);
       tmpC.setHex(colorHex);
@@ -1445,6 +1525,141 @@ export class BeadGlobe implements GlobeAdapter {
       }
       if (any && shell.mesh.instanceColor) shell.mesh.instanceColor.needsUpdate = true;
     }
+  }
+
+  // ---------------- planet obstacles / armor (GDD §5b) ----------------
+
+  /**
+   * Arms beads of the outermost non-cloud shell (`shells[0]`: the outermost extra layer, or the
+   * surface on a single-layer level) per `obstacle`, and tints them. Deterministic from `seed`.
+   */
+  private setupArmor(obstacle: ObstacleConfig, seed: number): void {
+    const shell = this.shells[0];
+    const armor = new Uint8Array(shell.count);
+    if (obstacle.kind === 'ice') {
+      const minY = Math.sin((obstacle.minAbsLatDeg * Math.PI) / 180);
+      for (let i = 0; i < shell.count; i++) if (Math.abs(shell.dirs[i * 3 + 1]) >= minY) armor[i] = obstacle.armor;
+    } else {
+      const rng = mulberry32(seed ^ 0x3d1c77);
+      const centers: [number, number, number][] = [];
+      for (let tries = 0; centers.length < obstacle.regionCount && tries < 60; tries++) {
+        const z = rng() * 2 - 1, phi = rng() * Math.PI * 2, r = Math.sqrt(1 - z * z);
+        const c: [number, number, number] = [r * Math.cos(phi), z, r * Math.sin(phi)];
+        // Keep crust patches apart so each one is its own obstacle.
+        if (centers.every((o) => o[0] * c[0] + o[1] * c[1] + o[2] * c[2] < Math.cos(obstacle.capRadiusRad * 2.2))) centers.push(c);
+      }
+      const cosCap = Math.cos(obstacle.capRadiusRad);
+      for (let i = 0; i < shell.count; i++) {
+        const x = shell.dirs[i * 3], y = shell.dirs[i * 3 + 1], z = shell.dirs[i * 3 + 2];
+        if (centers.some((c) => c[0] * x + c[1] * y + c[2] * z >= cosCap)) armor[i] = obstacle.armor;
+      }
+    }
+    shell.armor = armor;
+    shell.armorMax = armor.slice();
+    shell.armorKind = obstacle.kind;
+    shell.armorBaseRgb = new Float32Array(shell.count * 3);
+    for (let i = 0; i < shell.count; i++) {
+      if (!armor[i]) continue;
+      shell.mesh.getColorAt(i, tmpC);
+      shell.armorBaseRgb[i * 3] = tmpC.r;
+      shell.armorBaseRgb[i * 3 + 1] = tmpC.g;
+      shell.armorBaseRgb[i * 3 + 2] = tmpC.b;
+      this.tintArmored(shell, i);
+      shell.scale[i] = ARMOR_SCALE;
+      this.writeMatrix(shell, i);
+    }
+    shell.mesh.instanceMatrix.needsUpdate = true;
+    if (shell.mesh.instanceColor) shell.mesh.instanceColor.needsUpdate = true;
+  }
+
+  /**
+   * Paints bead `i` for its current armor state on top of its real color (always still readable as
+   * that color): ice = frosted white-blue mix, crust = dark rocky grey mix, and a lighter grey with
+   * a warm crack glow once crust has dropped to its last armor point; armor 0 restores the plain bead.
+   */
+  private tintArmored(shell: Shell, i: number): void {
+    const base = shell.armorBaseRgb!;
+    tmpC.setRGB(base[i * 3], base[i * 3 + 1], base[i * 3 + 2]);
+    const left = shell.armor![i];
+    if (left > 0) {
+      if (shell.armorKind === 'ice') {
+        tmpC.lerp(ICE_TINT, 0.6);
+        tmpC.multiplyScalar(1.08);
+      } else if (left >= shell.armorMax![i]) {
+        tmpC.lerp(CRUST_TINT, 0.55);
+      } else {
+        tmpC.lerp(CRUST_CRACKED_TINT, 0.35);
+        tmpC.lerp(CRUST_CRACK_GLOW, 0.2);
+      }
+    }
+    shell.mesh.setColorAt(i, tmpC);
+  }
+
+  /** `GlobeAdapter.crackArmor`: -1 armor on every armored bead of `beads`; queues one crack FX event per cracked bead. */
+  crackArmor(beads: BeadRef[]): number {
+    let cracked = 0;
+    const touched = new Set<Shell>();
+    for (const b of beads) {
+      const shell = this.shells[b.shellId];
+      if (!shell.armor || !shell.armor[b.index] || !shell.alive[b.index]) continue;
+      shell.armor[b.index]--;
+      this.tintArmored(shell, b.index);
+      if (shell.armor[b.index] === 0) {
+        shell.scale[b.index] = 1;
+        this.writeMatrix(shell, b.index);
+        shell.mesh.instanceMatrix.needsUpdate = true;
+      }
+      touched.add(shell);
+      this.crackEvents.push({ position: this.positionOf(b.shellId, b.index), color: shell.palette[shell.colorIdx[b.index]], radius: shell.beadRadius });
+      cracked++;
+    }
+    for (const shell of touched) if (shell.mesh.instanceColor) shell.mesh.instanceColor.needsUpdate = true;
+    return cracked;
+  }
+
+  /** Crack FX events (one per cracked bead) since the last call. */
+  drainCrackEvents(): PopEvent[] {
+    const out = this.crackEvents.slice();
+    this.crackEvents.length = 0;
+    return out;
+  }
+
+  /**
+   * Probe budget bonus (GDD §5b): sum, over the level-start connected color regions of the armored
+   * shell that contain armored beads, of the largest armor value in that region. Coverage-blind,
+   * like `countRegions()`.
+   */
+  armorExtraProbes(): number {
+    const shell = this.shells[0];
+    if (!shell.armorMax) return 0;
+    const seen = new Uint8Array(shell.count);
+    let total = 0;
+    for (let i = 0; i < shell.count; i++) {
+      if (!shell.alive[i] || seen[i]) continue;
+      let maxArmor = 0;
+      for (const b of this.rawRegion(0, i)) {
+        seen[b.index] = 1;
+        maxArmor = Math.max(maxArmor, shell.armorMax[b.index]);
+      }
+      total += maxArmor;
+    }
+    return total;
+  }
+
+  /** Largest currently-exposed connected region of any color that still contains armored beads, or null. Tutorial targeting. */
+  findLargestArmoredRegion(): BeadRef[] | null {
+    const shell = this.shells[0];
+    if (!shell.armor) return null;
+    const seen = new Uint8Array(shell.count);
+    let best: BeadRef[] | null = null;
+    for (let i = 0; i < shell.count; i++) {
+      if (!shell.alive[i] || seen[i] || this.isCovered(shell, i)) continue;
+      const region = this.region(0, i);
+      let armored = false;
+      for (const b of region) { seen[b.index] = 1; if (shell.armor[b.index]) armored = true; }
+      if (armored && (!best || region.length > best.length)) best = region;
+    }
+    return best;
   }
 
   // ---------------- tutorial targeting helpers (integration layer only) ----------------

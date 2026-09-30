@@ -112,6 +112,8 @@ export const S = {
     autoSpin: pick('The World Turns', 'Dünya Dönüyor'),
     cloudDrift: pick('Drifting Clouds', 'Sürüklenen Bulutlar'),
     invasion: pick('Alien Invasion', 'Uzaylı İstilası'),
+    ice: pick('Polar Ice', 'Kutup Buzu'),
+    crust: pick('Asteroid Crust', 'Asteroit Kabuğu'),
   },
   unlockDescription: {
     swap: pick('Swap your current and next probe colors.', 'Aktif ve sıradaki mermi renklerini değiştir.'),
@@ -128,6 +130,8 @@ export const S = {
     ),
     autoSpin: pick('The globe now keeps turning on its own. Dragging still works — just push through it.', 'Küre artık kendi kendine dönmeye başladı. Sürüklemek hâlâ işe yarar — sadece biraz daha zorlanacaksın.'),
     cloudDrift: pick('These clouds now drift on their own, sliding over the beads and blocking shots until they move on — or you pop them.', 'Bu bulutlar artık kendi kendine sürükleniyor, boncukların üzerinde kayıyor ve geçene ya da onları patlatana kadar atışları engelliyor.'),
+    ice: pick('The poles are frozen over. A matching probe only cracks the ice — hit it again to pop the region. Powers break straight through.', 'Kutuplar buzla kaplı. Uyan bir mermi buzu yalnızca çatlatır — bölgeyi patlatmak için bir kez daha vur. Güçler doğrudan içinden geçer.'),
+    crust: pick('Asteroid crust now armors parts of the Moon. It takes two matching hits to crack through, then one more to pop the region. Powers break straight through.', 'Asteroit kabuğu artık Ay\'ın bazı bölgelerini zırhlıyor. Kırmak için uyan iki atış gerekir, bölgeyi patlatmak için bir atış daha. Güçler doğrudan içinden geçer.'),
     invasion: pick('Alien ships can now appear. Tap a ship to destroy it before it fires — its laser sets beads on fire.', 'Artık uzaylı gemileri belirebilir. Ateş etmeden önce gemiye dokunarak yok et — lazeri boncukları ateşe verir.'),
   },
 
@@ -148,8 +152,12 @@ export const S = {
     cometUse: pick('Swipe across the world.', 'Dünyanın üzerinde kaydır.'),
     cloudDrift: pick('Wait for a gap, or pop through the drifting clouds.', 'Bir boşluk bekle ya da sürüklenen bulutları patlatarak geç.'),
     invasionShip: pick('An alien ship is approaching — tap it to destroy it before it fires!', 'Bir uzaylı gemisi yaklaşıyor — ateş etmeden önce ona dokunarak yok et!'),
+    ice: pick('Shoot the matching color at the frosted beads to crack the ice.', 'Buzlu boncuklara uyan renkte ateş ederek buzu çatlat.'),
+    crust: pick('Shoot the matching color at the rocky beads to crack the crust.', 'Kayalık boncuklara uyan renkte ateş ederek kabuğu çatlat.'),
     invasionFire: pick('Its laser set part of the planet on fire. Look for a fire-colored probe to put it out.', 'Lazeri gezegenin bir bölümünü ateşe verdi. Söndürmek için ateş renkli bir mermi ara.'),
   },
+  /** GDD §5b falling fragments toast (first time per level). */
+  fragmentsFell: (n: number) => pick(`Fragments fell! +${n}`, `Kopan parça! +${n}`),
   spinTiltNotice: pick('The world can now spin on tilted axes, not just side to side.', 'Dünya artık sadece yatay değil, eğik eksenlerde de dönebiliyor.'),
   spinReverseNotice: pick('The world may now reverse direction as it spins.', 'Dünya artık dönerken yön değiştirebiliyor.'),
 

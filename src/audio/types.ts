@@ -10,6 +10,7 @@ export type SfxName =
   | 'pop'
   | 'bigPop'
   | 'miss'
+  | 'crack'
   | 'swap'
   | 'powerMeteor'
   | 'powerPrism'

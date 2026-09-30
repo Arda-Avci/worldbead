@@ -27,7 +27,9 @@ type IconName =
   | 'check'
   | 'hand'
   | 'chevron'
-  | 'ship';
+  | 'ship'
+  | 'snowflake'
+  | 'rock';
 
 function svg(inner: string, viewBox = '0 0 24 24'): string {
   // stroke-width defaults to 0 at the root so shapes that don't set their own
@@ -120,6 +122,16 @@ const ICONS: Record<IconName, string> = {
       '<path d="M6.7 14.8c0 4 2.6 6.7 6.4 6.7 3.7 0 6.6-2 6.6-6V10.1" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>',
   ),
   chevron: svg('<path d="M9 6l6 6-6 6" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'),
+  snowflake: svg(
+    '<g fill="none" stroke-width="1.7" stroke-linecap="round">' +
+      '<path d="M12 3v18M4.2 7.5l15.6 9M19.8 7.5l-15.6 9"/>' +
+      '<path d="M9.6 4.8 12 7l2.4-2.2M9.6 19.2 12 17l2.4 2.2M3.8 10.4l3.1-.2-.9-3M20.2 13.6l-3.1.2.9 3M3.8 13.6l3.1.2-.9 3M20.2 10.4l-3.1-.2.9-3"/>' +
+      '</g>',
+  ),
+  rock: svg(
+    '<path d="M4.5 14.2 7 7.4l5.2-3.4 5.6 2.6 2.2 6.2-3.4 5.2-6.6.9z" fill="none" stroke-width="1.7" stroke-linejoin="round"/>' +
+      '<path d="M12.2 4 11 10.4l3.4 2.6M11 10.4 7 12.6" fill="none" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>',
+  ),
   ship: svg(
     '<path d="M2.5 14.5c1.8 2.2 5.4 3.6 9.5 3.6s7.7-1.4 9.5-3.6c-1.8-1.1-5.4-1.8-9.5-1.8s-7.7.7-9.5 1.8z"/>' +
       '<path d="M9 12.8c0-2.6 1.3-4.6 3-4.6s3 2 3 4.6" fill="none" stroke-width="1.6" stroke-linecap="round"/>' +

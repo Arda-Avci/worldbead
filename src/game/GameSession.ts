@@ -25,6 +25,7 @@ export const CONTINUE_EXTRA_PROBES = 5;
 export type SessionEvent =
   | { type: 'fire'; result: 'hit'; color: number; poppedCount: number; stardustEarned: number; combo: boolean }
   | { type: 'fire'; result: 'miss'; color: number }
+  | { type: 'fire'; result: 'crack'; color: number; crackedCount: number }
   | { type: 'power'; power: PowerId; poppedCount: number }
   | { type: 'swap' }
   | { type: 'win'; stars: 1 | 2 | 3; stardustEarned: number; bonusPower: PowerId | null }
@@ -34,6 +35,8 @@ export type SessionEvent =
 export interface SessionInit {
   /** Number of connected color regions at level start (`globe.countRegions()`) — the true minimum number of shots needed to clear the level (one per region, playing optimally). */
   regions: number;
+  /** GDD §5b: extra probes for armored regions (sum over armored regions of max armor, `BeadGlobe.armorExtraProbes()`); 0/omitted = no armor. */
+  armorProbes?: number;
   seed: number;
   stardust: number;
   /** Power unlock state + charges, mutated in place and readable back for persistence. */
@@ -57,7 +60,7 @@ export class GameSession {
     // Owner requirement: give the player exactly 2 more shots than the minimum required to clear
     // the level, where the minimum is one shot per connected color region (playing optimally).
     const EXTRA_SHOTS = 2;
-    this.probesTotal = Math.max(1, opts.regions) + EXTRA_SHOTS;
+    this.probesTotal = Math.max(1, opts.regions) + EXTRA_SHOTS + (opts.armorProbes ?? 0);
     this.probes = this.probesTotal;
     this.stardust = opts.stardust;
     this.powers = opts.powers;
@@ -107,6 +110,11 @@ export class GameSession {
     return [{ type: 'swap' }];
   }
 
+  /** Tutorial-only: makes `color` the current probe (must be hittable somewhere). */
+  setQueueFront(color: number): void {
+    if (this.globe.exposedColors().has(color)) this.queue[0] = color;
+  }
+
   /** Fire the current probe at an already-picked, currently-hittable bead. */
   fire(shellId: number, index: number): SessionEvent[] {
     if (this.ended || this.probes <= 0) return [];
@@ -121,6 +129,13 @@ export class GameSession {
 
     if (matches) {
       const region = this.globe.region(shellId, index);
+      // GDD §5b: a matching hit (prism included) on a region with armored beads cracks it instead of popping.
+      const crackedCount = this.globe.crackArmor?.(region) ?? 0;
+      if (crackedCount > 0) {
+        this.prismArmed = false;
+        this.advanceQueue();
+        return [{ type: 'fire', result: 'crack', color, crackedCount }, ...this.checkOutcome()];
+      }
       const poppedCount = this.globe.pop(region);
       this.prismArmed = false;
       const stardustEarned = Math.max(1, Math.ceil(poppedCount / 12));
