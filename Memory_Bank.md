@@ -2365,3 +2365,24 @@ Built by three parallel worktree agents, merged by the orchestrator.
 - Open: Mars/Venus/Jupiter have no obstacle yet (owner only asked for the
   Earth/Moon examples). Pre-existing G1–G8 items in `docs/GAMEPLAY_REVIEW.md`
   are untouched (G3 camera framing still makes layered globes overflow).
+
+## Owner bug batch after Pearl Gem build (2026-09-30): region pop, unsupported outer beads, tap/color match
+
+- `BeadGlobe.region()` is now coverage-blind (same as `rawRegion`): a hit pops the
+  whole connected same-color patch on the shell, including parts hidden under an
+  outer layer/cloud (they die silently, no FX). Matches `countRegions()`, so a
+  region is one shot. This reverses the earlier "hidden beads must not pop" rule
+  because lower-layer patches were leaving stray hidden leftovers.
+- New `dropUnsupported` cascade in `pop()`: an outer-layer bead whose whole
+  footprint on the shell below is dead is popped too (cascades upward). The
+  cloud shell is never a cascade target. This finally makes the old "unsupported"
+  idea reachable, because covered beads can now die. `footprintOf()` lazily
+  inverts `coveredBy`.
+- `src/game/colorMatch.ts`: probe vs bead match is perceptual (CIE76 ΔE < 5),
+  not exact hex — near-white pale layers/clouds looked identical but differed by
+  a few hex steps. Root cause of the "correct color rejected" report was not
+  reproduced headless; this and the looser tap thresholds (`TAP_MAX_MOVE` 16 px,
+  `TAP_MAX_MS` 600) are the fix applied. If it still happens, suspect cloud-tone
+  vs surface-tone (white cloud bead tapped while probe is a white surface tone).
+- Verified headless: L21 (2 layers) cleared in 5 shots, hidden layer beads freed
+  (layer 136→0 after a surface pop); L41 (clouds) and L100 (3 layers) play with no errors.

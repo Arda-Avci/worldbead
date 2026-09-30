@@ -65,8 +65,8 @@ interface Flight {
   targetBead?: { shellId: number; index: number };
 }
 
-const TAP_MAX_MOVE = 10; // px
-const TAP_MAX_MS = 450;
+const TAP_MAX_MOVE = 16; // px (finger jitter on a phone easily exceeds 10 px; a real drag is far longer)
+const TAP_MAX_MS = 600;
 const ROT_SPEED = 0.0055; // rad per px
 const PRISM_PROBE_COLOR = 0xd9c7ff;
 const METEOR_RADIUS = 0.3; // globe-local units

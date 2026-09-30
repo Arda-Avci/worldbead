@@ -904,6 +904,8 @@ export class BeadGlobe implements GlobeAdapter {
   /** GDD §5b: beads that fell as fragments since the last `takeFallenCount()`. */
   private fallenSinceTaken = 0;
   private lastPopped: BeadRef[] = [];
+  /** Lazy inverse of each shell's `coveredBy` (see `footprintOf`), indexed by the inner shell id. */
+  private readonly footprints: Int32Array[][] = [];
   private cloudCoverRecalc: { cloudDirs: Float32Array; cloudSpacing: number; bodyShellIndex: number; bodyDirs: Float32Array; bodySpacing: number } | null = null;
 
   constructor(cfg: LevelConfig, images: TextureMap, material: THREE.Material) {
@@ -1158,40 +1160,17 @@ export class BeadGlobe implements GlobeAdapter {
   }
 
   /**
-   * Connected same-color, currently-exposed beads starting at (shellId,
-   * startIdx) — i.e. what a player can actually see and would expect to pop
-   * together. The BFS stops at any same-color bead that's still `isCovered`
-   * (hidden under an intact outer layer/cloud elsewhere on this shell): the
-   * neighbor graph only knows adjacency, not visibility, so without this
-   * check a same-color patch that happens to also reach under still-alive
-   * cover would pop invisibly — the player never sees it happen, and later,
-   * once the cover above it finally clears, that patch is already gone
-   * instead of being revealed (the reported "layers aren't really there" and
-   * beads vanishing without a visible pop). `startIdx` itself is always
-   * exposed already (every caller checks that before calling `region`).
+   * The whole connected same-color patch starting at (shellId, startIdx) — what a hit pops.
+   * Owner bug report: "not all beads of the same color group vanish, especially lower-layer beads
+   * that still have a layer above them". The old coverage-aware flood stopped at every bead still
+   * hidden under an intact outer layer/cloud, so a lower-layer patch popped only its visible part
+   * and left the hidden part behind as stray singletons. A region is now the full connected
+   * same-color patch on the shell, hidden or not — the same definition `countRegions()` budgets
+   * with, so one region is always one shot. Hidden beads die silently (no FX, see `popInternal`).
+   * `startIdx` itself is always exposed (every caller checks that before calling `region`).
    */
   region(shellId: number, startIdx: number): BeadRef[] {
-    const shell = this.shells[shellId];
-    const color = shell.colorIdx[startIdx];
-    const seen = new Uint8Array(shell.count);
-    const out: BeadRef[] = [];
-    let frontier = [startIdx];
-    seen[startIdx] = 1;
-    while (frontier.length) {
-      const next: number[] = [];
-      for (const i of frontier) {
-        out.push({ shellId, index: i });
-        for (let p = shell.nbrStart[i]; p < shell.nbrStart[i + 1]; p++) {
-          const j = shell.nbrList[p];
-          if (!seen[j] && shell.alive[j] && shell.colorIdx[j] === color && !this.isCovered(shell, j)) {
-            seen[j] = 1;
-            next.push(j);
-          }
-        }
-      }
-      frontier = next;
-    }
-    return out;
+    return this.rawRegion(shellId, startIdx);
   }
 
   /**
@@ -1361,23 +1340,65 @@ export class BeadGlobe implements GlobeAdapter {
    * Pops the given beads and returns the count actually popped (already-dead
    * beads are skipped), so callers can score/react to what actually happened.
    *
-   * Note: this used to also run an "unsupported outer beads fall on their own"
-   * cascade (item #5). That cascade was provably dead code (production review
-   * item #4): every code path that can kill beads — `region()`,
-   * `beadsInRadius`, `beadsOfColorInHemisphere`, `beadsInBand` — filters out
-   * covered beads, so an outer bead's footprint on the shell below can never
-   * go fully dead while that outer bead is still alive (its footprint beads
-   * are exactly the beads it covers, and covered beads can't die first).
-   * It was removed rather than redesigned: any reachable redesign (e.g.
-   * same-shell support) would change the shot-budget math and the
-   * region-count model, which is a gameplay-design decision, not a bug fix.
+   * A pop can also free outer-layer beads whose support below is gone (`dropUnsupported`) and
+   * small exposed fragments (`dropFragments`); the returned count includes both.
    */
   pop(beads: BeadRef[]): number {
     const popped = this.popInternal(beads);
     if (popped === 0) return 0;
-    const fallen = this.dropFragments(this.lastPopped);
+    const killed = this.lastPopped.slice();
+    const unsupported = this.dropUnsupported(killed);
+    const fallen = this.dropFragments(killed.concat(unsupported));
     this.fallenSinceTaken += fallen;
-    return popped + fallen;
+    return popped + unsupported.length + fallen;
+  }
+
+  /**
+   * Owner request: when a lower layer is popped, upper-layer beads left with nothing under them
+   * count as popped too (clouds excepted — they stay a separate drifting layer). An outer bead is
+   * "unsupported" once every bead of the shell below that it covers is dead. Runs as a cascade, so
+   * a layer emptied this way can in turn free the layer above it. Only beads that cover something
+   * just killed are examined, and the cloud shell is never a cascade target.
+   */
+  private dropUnsupported(killed: BeadRef[]): BeadRef[] {
+    const freed: BeadRef[] = [];
+    let frontier = killed;
+    while (frontier.length > 0) {
+      const next: BeadRef[] = [];
+      for (const b of frontier) {
+        const inner = this.shells[b.shellId];
+        if (inner.coveringShellIndex === undefined || !inner.coveredBy) continue;
+        const coverIdx = inner.coveringShellIndex;
+        const cover = this.shells[coverIdx];
+        if (cover.kind === 'clouds') continue;
+        const footprint = this.footprintOf(b.shellId);
+        for (const c of inner.coveredBy[b.index]) {
+          if (!cover.alive[c]) continue;
+          const below = footprint[c];
+          let supported = false;
+          for (let k = 0; k < below.length; k++) if (inner.alive[below[k]]) { supported = true; break; }
+          if (!supported) next.push({ shellId: coverIdx, index: c });
+        }
+      }
+      if (next.length === 0) break;
+      this.popInternal(next); // sets `lastPopped` to exactly the beads this round killed
+      frontier = this.lastPopped.slice();
+      freed.push(...frontier);
+    }
+    return freed;
+  }
+
+  /** For shell `innerId`: per covering bead, the `innerId` beads it covers (the inverse of `coveredBy`), built once. */
+  private footprintOf(innerId: number): Int32Array[] {
+    let fp = this.footprints[innerId];
+    if (fp) return fp;
+    const inner = this.shells[innerId];
+    const cover = this.shells[inner.coveringShellIndex!];
+    const buckets: number[][] = Array.from({ length: cover.count }, () => []);
+    for (let i = 0; i < inner.count; i++) for (const c of inner.coveredBy![i]) buckets[c].push(i);
+    fp = buckets.map((a) => Int32Array.from(a));
+    this.footprints[innerId] = fp;
+    return fp;
   }
 
   /** GDD §5b: how many beads fell as fragments since the last call (then resets), for the first-time toast. */
@@ -1437,9 +1458,11 @@ export class BeadGlobe implements GlobeAdapter {
     for (const b of beads) {
       const shell = this.shells[b.shellId];
       if (!shell.alive[b.index]) continue;
-      const hex = shell.palette[shell.colorIdx[b.index]];
-      const pos = this.positionOf(b.shellId, b.index);
-      this.popEvents.push({ position: pos, color: hex, radius: shell.beadRadius });
+      // Beads still hidden under an outer layer/cloud die without a burst: there is nothing to see.
+      if (!this.isCovered(shell, b.index)) {
+        const hex = shell.palette[shell.colorIdx[b.index]];
+        this.popEvents.push({ position: this.positionOf(b.shellId, b.index), color: hex, radius: shell.beadRadius });
+      }
       shell.alive[b.index] = 0;
       this.popAnims.push({ shell, index: b.index, t0: this.animClock + Math.min(i, 40) * 0.016, dur: 0.2 });
       this.lastPopped.push(b);

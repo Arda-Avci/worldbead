@@ -4,6 +4,7 @@
  * for the integration layer to map to FX/audio/UI.
  */
 import { mulberry32 } from './noise';
+import { colorsMatch } from './colorMatch';
 import { POWER_PRICES, type PowerId } from './unlocks';
 import type { GlobeAdapter, Vec3 } from './types';
 
@@ -147,7 +148,7 @@ export class GameSession {
     if (current === null) return [];
 
     const viaPrism = this.prismArmed;
-    const matches = viaPrism || color === current;
+    const matches = viaPrism || colorsMatch(color, current);
     this.probes--;
     const events: SessionEvent[] = [];
 
