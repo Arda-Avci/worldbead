@@ -72,6 +72,26 @@ A tutorial dims the screen, cuts a spotlight around the target, shows an animate
 - **UI:** space-glass panels, Orbitron (display) + Exo 2 (UI). Top: Stardust (left), planet + level + cleared-% ring (center), settings (right). Bottom: probe dock (next, swap, current + probe count), power buttons with lock badges ("Lv 6").
 - **Credits** screen in settings: textures © Solar System Scope, CC BY 4.0 (based on NASA data).
 
+## 5b. Reference-game mechanics adapted (owner decision, 2026-09-30)
+Owner picked these from the Pearl Gem analysis. Everything stays WorldBead's own: bead colors always come from the real planet texture (no spiral/stripe patterns), layered shells stay as they are (inner shells = smaller beads, closer to the real surface), no gem/pearl container meta.
+
+**Streak reward.** Consecutive matching hits (probe fire, not powers) fill a streak meter; a miss resets it to 0. At `STREAK_TARGET = 5` the meter empties and grants one reward: a free charge of a random unlocked power, or +1 probe when no power is unlocked yet. Meter shown next to the probe dock (5 pips). Introduced at level 4 with a non-blocking-input card (caption only, tap to continue).
+
+**Falling fragments.** After any pop (probe, power, fire), on each shell that lost beads: BFS the alive same-shell neighbors of the popped beads into connected components (any color). A component falls (popped with a drop/spill animation, counts as popped for stardust and win) when every bead in it is exposed (not covered by an outer shell) and its size is ≤ `FRAGMENT_MAX = 12 %` of that shell's starting bead count. Components never fall at level start and never cascade into other shells. A "Kopan parça!" / "Fragments fell!" toast shows the first time per level, with the fallen count. Budget: unchanged (regions + 2; falling only ever helps).
+
+**Planet obstacles (armor).** Some beads of the outermost non-cloud shell carry armor hit points. A matching probe hit on a region that contains armored beads does not pop it: it removes 1 armor point from every armored bead of that region (crack FX + sound); when none of the region's beads has armor left, the next matching hit pops it normally. Powers (meteor, solar flare, comet) ignore armor and pop directly. Prism behaves like a matching probe. Budget: `probesTotal += sum over armored regions of max armor in that region`.
+| Planet | Obstacle | Where | Armor | From level |
+|---|---|---|---|---|
+| Earth | Polar ice (white-blue frosted beads) | outermost shell beads with abs(lat) ≥ 62° | 1 | 53 (then every Earth level) |
+| Moon | Asteroid crust (dark grey rocky beads) | 1-3 seeded regions of the outermost shell | 2 | 64 (then every Moon level) |
+Each obstacle gets a forced tutorial on its first level (spotlight an armored region, player cracks it).
+
+**Level size label.** At level start the HUD shows "Küçük / Orta / Büyük / Ekstrem" ("Small / Medium / Large / Extreme") from `probesTotal`: ≤ 10, ≤ 20, ≤ 35, else Extreme. Shown as the first line of the existing level-start banner/toast, 1.6 s.
+
+**Real satellites.** From level 17 each level has a 50 % seeded chance (level 17 always) that one real spacecraft flies one pass around the globe (enters from off-screen, orbits in front of the planet for ~9 s on a tilted circular path, leaves). Tapping it catches it: no probe spent; reward is +40 stardust or one free charge of a random unlocked power (50/50, stardust when none unlocked), plus a short real fact about that spacecraft on a toast. Missed = it just leaves. A tap hit-tests the satellite before the globe. Per-planet roster (procedural low-poly meshes, recognizable silhouettes, no textures needed): Earth ISS, Hubble; Moon LRO; Mars MRO, Mars Express; Venus Akatsuki; Jupiter Juno. Forced tutorial at level 17 (spotlight follows the satellite, player must tap it). Satellites and alien ships can share a level.
+
+**Bonus round.** After winning any level whose number ends in 5 (5, 15, 25, ...), a bonus round plays before the next level: current planet, single shell, K = 3, ~600 beads, unlimited probes, 30 s timer. Every popped bead = 1 stardust; clearing early ends it. No stars, no fail state, no level number change, no tutorials inside it. Intro card "Bonus Tur!" the first time, then a short banner. HUD shows the timer instead of the probe count. Music: the planet's own ambient; at the end `win` sfx and a stardust total card.
+
 ## 6. Module ownership & contracts
 Each module lives in its own folder. Only the integration step (`src/game/Game.ts`, `src/main.ts`) wires modules together.
 
