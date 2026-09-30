@@ -705,6 +705,18 @@ function crack(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
   return Math.max(maxEnd, d2) + 0.03;
 }
 
+// ---------------- real satellites (src/game/satellites.ts) ----------------
+/** Pleasant rising sparkle arpeggio (pentatonic) with a soft low "lock-on" blip underneath. */
+function satelliteCatch(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
+  let maxEnd = playTone(ctx, dest, { type: 'sine', freq: 330, freqEnd: 660, start: t, attack: 0.005, decay: 0.12, peak: 0.22, release: 0.05 });
+  [880, 1174.7, 1318.5, 1760, 2349.3].forEach((f, idx) => {
+    const start = t + 0.06 + idx * 0.07;
+    const d = playTone(ctx, dest, { type: 'triangle', freq: f, start, attack: 0.004, decay: 0.22, peak: 0.2, release: 0.12 });
+    maxEnd = Math.max(maxEnd, start - t + d);
+  });
+  return maxEnd + 0.05;
+}
+
 /**
  * Builds a sound effect graph starting at `startTime` on `ctx`, connected to
  * `dest`. Works with a live AudioContext or an OfflineAudioContext.
@@ -765,6 +777,8 @@ export function buildSfx(
       return extinguish(ctx, dest, startTime);
     case 'shipExplode':
       return shipExplode(ctx, dest, startTime);
+    case 'satelliteCatch':
+      return satelliteCatch(ctx, dest, startTime);
     default: {
       const exhaustive: never = name;
       throw new Error(`Unknown SfxName: ${exhaustive}`);

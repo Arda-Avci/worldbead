@@ -4,8 +4,9 @@ export type PowerId = 'meteor' | 'prism' | 'solarFlare' | 'comet';
 
 import { FIRST_CLOUD_LEVEL, ICE_FIRST_LEVEL, CRUST_FIRST_LEVEL, STREAK_LEVEL } from './levels';
 import { INVASION_FIRST_LEVEL } from './invasion';
+import { SATELLITE_FIRST_LEVEL } from './satellites';
 
-export type UnlockId = 'fire' | 'rotate' | 'swap' | PowerId | 'cloudLayer' | 'newPlanet' | 'newLayer' | 'cloudDrift' | 'invasion' | 'ice' | 'crust' | 'streak';
+export type UnlockId = 'fire' | 'rotate' | 'swap' | PowerId | 'cloudLayer' | 'newPlanet' | 'newLayer' | 'cloudDrift' | 'invasion' | 'ice' | 'crust' | 'streak' | 'satellite';
 
 export interface UnlockEntry {
   level: number;
@@ -34,6 +35,8 @@ export const UNLOCKS: UnlockEntry[] = [
   // GDD §5b planet obstacles: first armored level of each (Earth polar ice, Moon asteroid crust).
   { level: ICE_FIRST_LEVEL, id: 'ice', tutorial: 'ice' },
   { level: CRUST_FIRST_LEVEL, id: 'crust', tutorial: 'crust' },
+  // Real satellites (GDD §5b): first guaranteed pass, forced tutorial where the player catches it.
+  { level: SATELLITE_FIRST_LEVEL, id: 'satellite', tutorial: 'satellite' },
   // 'newPlanet' is no longer a fixed level here: with the planet rotating every
   // 10 levels (item #15) it's shown dynamically in `Game.ts` at the start of
   // every planet slot after the first, keyed per-level like everything else.

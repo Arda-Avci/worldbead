@@ -353,7 +353,9 @@
 
 .wb-toast {
   padding: 9px 18px;
-  border-radius: 999px;
+  max-width: min(88vw, 380px);
+  text-align: center;
+  border-radius: 18px;
   font-size: 13px;
   font-weight: 600;
   opacity: 0;
