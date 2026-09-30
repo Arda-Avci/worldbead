@@ -73,4 +73,13 @@ export interface GlobeAdapter {
    * own concern, not the caller's.
    */
   igniteFire?(beads: BeadRef[], colorHex: number): void;
+
+  // ---- Optional: planet obstacles / armor (GDD §5b). ----
+
+  /**
+   * Removes 1 armor point from every armored bead in `beads` (a just-hit
+   * region). Returns how many beads were cracked; 0 means none of them had
+   * armor left, i.e. the region pops normally.
+   */
+  crackArmor?(beads: BeadRef[]): number;
 }

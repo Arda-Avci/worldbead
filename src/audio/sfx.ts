@@ -669,6 +669,29 @@ function shipExplode(ctx: BaseAudioContext, dest: AudioNode, t: number): number 
   return maxEnd + 0.04;
 }
 
+/** GDD §5b armor crack: a sharp ice/rock splinter — a bright noise crunch, two tiny tick-cracks, a short low knock. */
+function crack(ctx: BaseAudioContext, dest: AudioNode, t: number): number {
+  const d1 = playNoise(ctx, dest, {
+    start: t,
+    duration: 0.16,
+    attack: 0.001,
+    decay: 0.14,
+    peak: 0.5,
+    filterType: 'bandpass',
+    freq: 3800,
+    freqEnd: 1400,
+    q: 1.1,
+  });
+  let maxEnd = d1;
+  for (let k = 0; k < 2; k++) {
+    const start = t + 0.035 + k * 0.045;
+    const d = playNoise(ctx, dest, { start, duration: 0.02, attack: 0.001, decay: 0.016, peak: 0.3, filterType: 'highpass', freq: 5000 - k * 900 });
+    maxEnd = Math.max(maxEnd, start - t + d);
+  }
+  const d2 = playTone(ctx, dest, { type: 'triangle', freq: 210, freqEnd: 95, start: t, attack: 0.002, decay: 0.09, peak: 0.28 });
+  return Math.max(maxEnd, d2) + 0.03;
+}
+
 /**
  * Builds a sound effect graph starting at `startTime` on `ctx`, connected to
  * `dest`. Works with a live AudioContext or an OfflineAudioContext.
@@ -691,6 +714,8 @@ export function buildSfx(
       return bigPop(ctx, dest, startTime, intensity, planet);
     case 'miss':
       return miss(ctx, dest, startTime);
+    case 'crack':
+      return crack(ctx, dest, startTime);
     case 'swap':
       return swap(ctx, dest, startTime, planet);
     case 'powerMeteor':

@@ -76,6 +76,8 @@ const UNLOCK_INFO: Partial<Record<UnlockId, { icon: string; name: string; descri
   newLayer: { icon: 'star', name: S.unlockName.newLayer, description: S.unlockDescription.newLayer },
   cloudDrift: { icon: 'star', name: S.unlockName.cloudDrift, description: S.unlockDescription.cloudDrift },
   invasion: { icon: 'ship', name: S.unlockName.invasion, description: S.unlockDescription.invasion },
+  ice: { icon: 'snowflake', name: S.unlockName.ice, description: S.unlockDescription.ice },
+  crust: { icon: 'rock', name: S.unlockName.crust, description: S.unlockDescription.crust },
 };
 
 /** Generous, phone-friendly hit radius (world units) a tap must land within to destroy a ship — see `AlienInvasionRenderer`'s own copy for the raycast test itself; kept here too for the tutorial's spotlight sizing. */
@@ -158,6 +160,9 @@ export class Game {
   private lastLayerShown = 0;
   /** Average connected-region size for the level in progress (totalBeads / regions at level start) — the "reasonable large-group size" baseline the big-pop celebration (item #7) scales against. */
   private avgRegionSize = 1;
+  /** GDD §5b falling fragments: whether this level's first-time toast has been shown, and a running total (QA). */
+  private fragmentToastShown = false;
+  private fragmentsFallenTotal = 0;
 
   // alien invasion (see `src/game/invasion.ts`)
   private readonly aliens = new AlienInvasionRenderer();
@@ -260,6 +265,25 @@ export class Game {
         // lets a script tell "off-camera, needs rotation" apart from "truly nowhere exposed".
         exposedColorsHex: () => (this.globe ? [...this.globe.exposedColors().keys()] : null),
         regionsOfColorAnywhere: (hex: number) => (this.globe ? this.globe.findExposedRegionsOfColor(hex).map((r) => r.length) : null),
+        fragmentsFallenTotal: () => this.fragmentsFallenTotal,
+        armorState: () => this.qaArmorState(),
+        // QA-only: wraps the current globe's `pop` to record each call's wall time (ms) and result.
+        timePops: () => {
+          const g = this.globe;
+          if (!g) return null;
+          const log: { ms: number; beads: number; total: number; aliveBefore: number }[] = [];
+          const orig = g.pop.bind(g);
+          g.pop = (beads) => {
+            const aliveBefore = g.aliveCount();
+            const t0 = performance.now();
+            const total = orig(beads);
+            log.push({ ms: performance.now() - t0, beads: beads.length, total, aliveBefore });
+            return total;
+          };
+          (window as unknown as { __wbPopLog: unknown }).__wbPopLog = log;
+          return true;
+        },
+        armoredTarget: (mode?: 'armored' | 'cleared') => this.qaArmoredTarget(mode),
         sunState: () => this.scene.debugSunState(),
         toastState: () => {
           const el = this.canvas.parentElement?.querySelector('[data-toast]');
@@ -538,6 +562,8 @@ export class Game {
     globe.group.visible = false;
     this.levelTotalBeads = globe.aliveCount();
     this.lastLayerShown = 0;
+    this.fragmentToastShown = false;
+    this.fragmentsFallenTotal = 0;
     this.scene.setBodyRadius(globe.outerRadius());
     // Bug: `PlanetBody.revealed` defaults to `true` and `setBodyRevealed()` was only ever called
     // with `true` (at the win/hero reveal beat) — never back to `false` when a new level's beads
@@ -557,6 +583,7 @@ export class Game {
     this.avgRegionSize = this.levelTotalBeads / Math.max(1, regions);
     this.session = new GameSession(globe, {
       regions,
+      armorProbes: globe.armorExtraProbes(),
       seed: cfg.seed,
       stardust: this.progress.stardust,
       powers,
@@ -804,6 +831,12 @@ export class Game {
         this.pendingHitResolve = null;
         break;
       }
+      case 'ice':
+        await this.runArmorTutorial(S.tutorial.ice);
+        break;
+      case 'crust':
+        await this.runArmorTutorial(S.tutorial.crust);
+        break;
       case 'invasion': {
         // Blocks until the first ship either fires (it out-waited the player) or is destroyed by a
         // tap — the player doesn't have to succeed, just see the mechanic once (matches the
@@ -817,6 +850,38 @@ export class Game {
         break;
       }
     }
+  }
+
+  /**
+   * GDD §5b armor tutorials (level 53 ice / 64 crust): makes the current probe match the largest
+   * exposed armored region, turns that region toward the camera, spotlights it and blocks input
+   * until the player cracks it (a crack resolves `pendingHitResolve`, see `handleEvents`).
+   */
+  private async runArmorTutorial(caption: string): Promise<void> {
+    if (!this.globe || !this.session) return;
+    const region = this.globe.findLargestArmoredRegion();
+    if (!region) return;
+    const color = this.globe.colorAt(region[0].shellId, region[0].index);
+    if (color !== null) this.session.setQueueFront(color);
+    this.updateHud();
+    this.faceRegionToCamera(region);
+    const until = new Promise<void>((res) => (this.pendingHitResolve = res));
+    await this.tutorial.run([{ caption, target: () => this.beadScreenCircle(region) ?? this.globeScreenCircle(), gesture: 'tap', until }]);
+    this.pendingHitResolve = null;
+  }
+
+  /** Rotates the globe (shortest arc) so the centroid of `beads` faces the camera. */
+  private faceRegionToCamera(beads: BeadRef[]): void {
+    if (!this.globe || beads.length === 0) return;
+    const c = new THREE.Vector3();
+    for (const b of beads) {
+      const p = this.globe.positionOf(b.shellId, b.index);
+      c.add(new THREE.Vector3(p.x, p.y, p.z).normalize());
+    }
+    const center = this.globe.group.getWorldPosition(new THREE.Vector3());
+    const worldDir = this.globe.group.localToWorld(c.normalize()).sub(center).normalize();
+    const toCam = this.scene.camera.position.clone().sub(center).normalize();
+    this.scene.globe.quaternion.premultiply(new THREE.Quaternion().setFromUnitVectors(worldDir, toCam));
   }
 
   private async runArmThenUseTutorial(power: PowerId, armCaption: string, useCaption: string, useGesture: 'tap' | 'swipe'): Promise<void> {
@@ -1114,6 +1179,17 @@ export class Game {
               this.pendingHitResolve = null;
               r();
             }
+          } else if (ev.result === 'crack') {
+            // GDD §5b: a matching hit on armored beads cracks them instead of popping.
+            this.burstCracks();
+            this.audio.play('crack');
+            this.scene.shake(0.25);
+            haptic('medium');
+            if (this.pendingHitResolve) {
+              const r = this.pendingHitResolve;
+              this.pendingHitResolve = null;
+              r();
+            }
           } else {
             this.audio.play('miss');
             this.scene.shake(0.5);
@@ -1162,8 +1238,30 @@ export class Game {
     saveProgress(this.progress);
   }
 
+  /** Crack FX for `BeadGlobe.drainCrackEvents()`: a white-ish splinter burst per (sampled) cracked bead. */
+  private burstCracks(): void {
+    if (!this.globe) return;
+    const events = this.globe.drainCrackEvents();
+    const step = Math.max(1, Math.floor(events.length / 16));
+    for (let i = 0; i < events.length; i += step) {
+      const ev = events[i];
+      const world = this.globe.group.localToWorld(new THREE.Vector3(ev.position.x, ev.position.y, ev.position.z));
+      this.scene.burst(world, 0xe8f4ff, 0.7);
+    }
+  }
+
   private burstDrainedPops(poppedCount: number): void {
     if (!this.globe) return;
+    // GDD §5b falling fragments: the fallen beads are already in this drain (they die through the
+    // normal pop path); just announce the first fall of the level.
+    const fell = this.globe.takeFallenCount();
+    if (fell > 0) {
+      this.fragmentsFallenTotal += fell;
+      if (!this.fragmentToastShown) {
+        this.fragmentToastShown = true;
+        this.ui.showToast(S.fragmentsFell(fell));
+      }
+    }
     const events = this.globe.drainPopEvents();
     if (events.length === 0) return;
     const cap = 24;
@@ -1543,6 +1641,54 @@ export class Game {
    * its simulated pointer event actually lands). Returns the alive-count before/after so a script
    * can tell whether this direct call actually popped anything.
    */
+  /** QA-only (dev): armor counts on the armored shell, plus the level's probe numbers. */
+  private qaArmorState(): { armoredAlive: number; byArmor: Record<number, number>; probesTotal: number; regions: number; armorExtra: number } | null {
+    if (!this.globe || !this.session) return null;
+    const shell = this.globe.shells[0];
+    const byArmor: Record<number, number> = {};
+    let armoredAlive = 0;
+    if (shell.armor) for (let i = 0; i < shell.count; i++) if (shell.alive[i] && shell.armor[i]) { armoredAlive++; byArmor[shell.armor[i]] = (byArmor[shell.armor[i]] ?? 0) + 1; }
+    return { armoredAlive, byArmor, probesTotal: this.session.probesTotal, regions: this.globe.countRegions(), armorExtra: this.globe.armorExtraProbes() };
+  }
+
+  /**
+   * QA-only (dev): turns the largest exposed armored region toward the camera, makes its color the
+   * current probe and returns a real hit-testable screen point on it (for a genuine pointer tap).
+   */
+  private qaArmoredTarget(mode: 'armored' | 'cleared' = 'armored'): { x: number; y: number; color: number; size: number } | null {
+    if (!this.globe || !this.session || !this.acceptInput || this.state !== 'playing') return null;
+    let region = this.globe.findLargestArmoredRegion();
+    if (mode === 'cleared') {
+      // Largest exposed region of the armored shell that started with armor and has none left.
+      const sh = this.globe.shells[0];
+      region = null;
+      const seen = new Uint8Array(sh.count);
+      for (let i = 0; i < sh.count && sh.armorMax; i++) {
+        if (!sh.alive[i] || seen[i] || !this.globe.isExposed(0, i)) continue;
+        const r = this.globe.region(0, i);
+        for (const b of r) seen[b.index] = 1;
+        if (r.some((b) => sh.armorMax![b.index] > 0) && !r.some((b) => sh.armor![b.index] > 0) && (!region || r.length > region.length)) region = r;
+      }
+    }
+    if (!region) return null;
+    const color = this.globe.colorAt(region[0].shellId, region[0].index);
+    if (color === null) return null;
+    this.session.setQueueFront(color);
+    this.updateHud();
+    this.faceRegionToCamera(region);
+    this.scene.globe.updateMatrixWorld(true);
+    const rect = this.canvas.getBoundingClientRect();
+    for (const b of region) {
+      const p = this.globe.positionOf(b.shellId, b.index);
+      const ndc = this.globe.group.localToWorld(new THREE.Vector3(p.x, p.y, p.z)).project(this.scene.camera);
+      const x = (ndc.x * 0.5 + 0.5) * rect.width + rect.left;
+      const y = (1 - (ndc.y * 0.5 + 0.5)) * rect.height + rect.top;
+      const hit = this.pickBead(x, y);
+      if (hit && hit.shellId === b.shellId && hit.index === b.index) return { x, y, color, size: region.length };
+    }
+    return null;
+  }
+
   private qaFireAtCurrentProbeDirect(): { before: number; after: number; hadTarget: boolean } | null {
     if (!this.globe) return null;
     const before = this.globe.aliveCount();
