@@ -79,11 +79,32 @@ export const S = {
   purchased: pick('Purchased!', 'Satın alındı!'),
   notEnoughStardust: pick('Not enough stardust', 'Yeterli yıldız tozu yok'),
   bonusPower: (name: string) => pick(`Bonus power: ${name}!`, `Bonus güç: ${name}!`),
+  streakRewardPower: (name: string) => pick(`Streak reward! +1 ${name}`, `Seri ödülü! +1 ${name}`),
+  streakRewardShot: pick('Streak reward! +1 shot', 'Seri ödülü! +1 atış'),
+  streakAria: pick('Hit streak', 'İsabet serisi'),
   megaPop: (n: number) => pick(`MEGA POP ×${n}`, `MEGA POP ×${n}`),
   /** Item #7: big-pop celebration text, tiered by how large the popped group was relative to the level's own average region size. */
   popWow: pick('Wow!', 'Vay canına!'),
   popGreat: pick('Great!', 'Harika!'),
   popAmazing: pick('Amazing!', 'Muhteşem!'),
+
+  // ------------------------------------------------ level size / bonus round
+  /** Level-size label shown at level start (from the shot budget, GDD §5b). */
+  levelSize: {
+    small: pick('Small', 'Küçük'),
+    medium: pick('Medium', 'Orta'),
+    large: pick('Large', 'Büyük'),
+    extreme: pick('Extreme', 'Ekstrem'),
+  },
+  bonusRound: pick('Bonus Round!', 'Bonus Tur!'),
+  bonusIntro: pick(
+    'Pop as many beads as you can in 30 seconds. Every bead is worth 1 stardust, and there is no shot limit!',
+    '30 saniyede olabildiğince çok boncuk patlat. Her boncuk 1 yıldız tozu, atış sınırı yok!',
+  ),
+  bonusGo: pick('Go!', 'Başla!'),
+  bonusTimerAria: pick('Time left', 'Kalan süre'),
+  bonusComplete: pick('Bonus Complete', 'Bonus Tamamlandı'),
+  bonusStardust: pick('Stardust collected', 'Toplanan yıldız tozu'),
 
   // ------------------------------------------------------ level complete
   levelComplete: pick('Level Complete', 'Seviye Tamamlandı'),
@@ -114,6 +135,7 @@ export const S = {
     invasion: pick('Alien Invasion', 'Uzaylı İstilası'),
     ice: pick('Polar Ice', 'Kutup Buzu'),
     crust: pick('Asteroid Crust', 'Asteroit Kabuğu'),
+    streak: pick('Streak Reward', 'Seri Ödülü'),
   },
   unlockDescription: {
     swap: pick('Swap your current and next probe colors.', 'Aktif ve sıradaki mermi renklerini değiştir.'),
@@ -132,6 +154,10 @@ export const S = {
     cloudDrift: pick('These clouds now drift on their own, sliding over the beads and blocking shots until they move on — or you pop them.', 'Bu bulutlar artık kendi kendine sürükleniyor, boncukların üzerinde kayıyor ve geçene ya da onları patlatana kadar atışları engelliyor.'),
     ice: pick('The poles are frozen over. A matching probe only cracks the ice — hit it again to pop the region. Powers break straight through.', 'Kutuplar buzla kaplı. Uyan bir mermi buzu yalnızca çatlatır — bölgeyi patlatmak için bir kez daha vur. Güçler doğrudan içinden geçer.'),
     crust: pick('Asteroid crust now armors parts of the Moon. It takes two matching hits to crack through, then one more to pop the region. Powers break straight through.', 'Asteroit kabuğu artık Ay\'ın bazı bölgelerini zırhlıyor. Kırmak için uyan iki atış gerekir, bölgeyi patlatmak için bir atış daha. Güçler doğrudan içinden geçer.'),
+    streak: pick(
+      'Land 5 matching hits in a row to earn a free power charge (or an extra shot). A miss resets the streak.',
+      '5 isabeti art arda yap, bedava bir güç hakkı (ya da ekstra atış) kazan. Iska seriyi sıfırlar.',
+    ),
     invasion: pick('Alien ships can now appear. Tap a ship to destroy it before it fires — its laser sets beads on fire.', 'Artık uzaylı gemileri belirebilir. Ateş etmeden önce gemiye dokunarak yok et — lazeri boncukları ateşe verir.'),
   },
 

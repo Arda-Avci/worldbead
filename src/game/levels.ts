@@ -100,6 +100,8 @@ export interface LevelConfig {
   seed: number;
   /** GDD §5b: this level's armor obstacle on the outermost non-cloud shell, or null. */
   obstacle: ObstacleConfig | null;
+  /** Bonus round board (GDD §5b), see `getBonusLevel`; absent on regular levels. */
+  bonus?: boolean;
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -190,6 +192,7 @@ export const LAYER_MILESTONES = [21, 70, 180]; // level at which total layer cou
 export const AUTO_SPIN_LEVEL = 15; // idle auto-spin begins here — before it, only the player's drag moves the globe
 export const SPIN_TILT_LEVEL = 35; // idle spin can pick a tilted (non-horizontal) axis from here
 export const SPIN_REVERSE_LEVEL = 75; // idle spin can reverse direction between spin phases from here
+export const STREAK_LEVEL = 4; // streak reward (5 matching hits in a row) introduced here — GDD §5b
 export const FIRST_CLOUD_LEVEL = 8; // first level (Earth's first visit only) with a cloud shell — 2 clear levels after `meteor` (6) and before the planet changes at 11
 /**
  * Item #19: from this level, any level with clouds gets an independently-drifting, shot-blocking
@@ -290,5 +293,32 @@ export function getLevel(level: number): LevelConfig {
     regionTarget,
     seed,
     obstacle: obstacleForLevel(planet, lv, seed),
+  };
+}
+
+/** A bonus round follows every win of a level whose number ends in 5 (GDD §5b). */
+export function isBonusAfterLevel(level: number): boolean {
+  return level % 10 === 5;
+}
+
+/**
+ * The bonus round board for `level`: the current planet as a single shell of ~600 big beads in 3 colors
+ * (still sampled from the real planet texture), no extra layers, no clouds. The level number is unchanged.
+ */
+export function getBonusLevel(level: number): LevelConfig {
+  const base = getLevel(level);
+  return {
+    ...base,
+    beadCount: 600,
+    cloudBeadCount: 0,
+    cloudDriftEnabled: false,
+    cloudFluffiness: 0,
+    k: 3,
+    extraLayers: [],
+    layerCount: 1,
+    regionTarget: 12,
+    seed: base.seed ^ 0xb0b5,
+    obstacle: null,
+    bonus: true,
   };
 }

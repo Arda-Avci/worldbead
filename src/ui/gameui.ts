@@ -45,6 +45,15 @@ export class GameUI {
 
   private readonly powerBtns: Map<PowerId, HTMLButtonElement> = new Map();
 
+  private readonly streakEl: HTMLElement;
+  private streakPips: HTMLElement[] = [];
+  private streakShown = 0;
+  private streakFlashTimer = 0;
+  private streakPending: { count: number | null; target: number } | null = null;
+  private readonly bonusTimeEl: HTMLElement;
+  private readonly bannerEl: HTMLElement;
+  private bannerTimer = 0;
+
   private readonly toastEl: HTMLElement;
   private readonly comboEl: HTMLElement;
   private toastTimer = 0;
@@ -93,6 +102,10 @@ export class GameUI {
         </div>
 
         <div class="wb-powerbar wb-glass" data-powerbar></div>
+
+        <div class="wb-streak wb-hidden" data-streak role="img" aria-label="${S.streakAria}"></div>
+        <div class="wb-bonus-timer wb-glass" data-bonus-timer role="timer" aria-label="${S.bonusTimerAria}"><span data-bonus-time>30</span></div>
+        <div class="wb-banner" data-banner><span class="wb-banner-top" data-banner-top></span><span class="wb-banner-main" data-banner-main></span></div>
       </div>
 
       <div class="wb-loading" data-loading>
@@ -129,6 +142,9 @@ export class GameUI {
     this.currentCount = q('[data-current-count]');
     this.nextOrb = q('[data-next-orb]');
     this.swapBtn = q('[data-swap]');
+    this.streakEl = q('[data-streak]');
+    this.bonusTimeEl = q('[data-bonus-time]');
+    this.bannerEl = q('[data-banner]');
     this.toastEl = q('[data-toast]');
     this.comboEl = q('[data-combo]');
     this.loadingEl = q('[data-loading]');
@@ -226,6 +242,104 @@ export class GameUI {
     } else {
       this.nextOrb.style.visibility = 'hidden';
     }
+  }
+
+  // ---------------------------------------------------- streak (GDD §5b)
+
+  /** `count` = current run of matching hits; `null` hides the pips (before the streak unlocks, in a bonus round). */
+  setStreak(count: number | null, target: number): void {
+    // While the reward flash plays, hold the latest real state and apply it when the flash ends.
+    if (this.streakFlashTimer) {
+      this.streakPending = { count, target };
+      return;
+    }
+    if (count === null) {
+      this.streakEl.classList.add('wb-hidden');
+      this.streakShown = 0;
+      return;
+    }
+    if (this.streakPips.length !== target) {
+      this.streakEl.innerHTML = '';
+      this.streakPips = [];
+      for (let i = 0; i < target; i++) {
+        const pip = document.createElement('span');
+        pip.className = 'wb-streak-pip';
+        this.streakEl.appendChild(pip);
+        this.streakPips.push(pip);
+      }
+    }
+    this.streakEl.classList.remove('wb-hidden');
+    const dropped = this.streakShown > 0 && count === 0;
+    this.streakPips.forEach((pip, i) => pip.classList.toggle('wb-on', i < count));
+    if (dropped) {
+      this.streakEl.classList.remove('wb-streak-reset');
+      void this.streakEl.offsetWidth;
+      this.streakEl.classList.add('wb-streak-reset');
+    }
+    this.streakShown = count;
+  }
+
+  /** Reward reached: fill and flash every pip, then fall back to the real (reset) state. */
+  flashStreakReward(): void {
+    this.streakPips.forEach((pip) => pip.classList.add('wb-on'));
+    this.streakEl.classList.remove('wb-streak-reset', 'wb-streak-flash');
+    void this.streakEl.offsetWidth;
+    this.streakEl.classList.add('wb-streak-flash');
+    window.clearTimeout(this.streakFlashTimer);
+    this.streakFlashTimer = window.setTimeout(() => {
+      this.streakFlashTimer = 0;
+      this.streakEl.classList.remove('wb-streak-flash');
+      const p = this.streakPending;
+      this.streakPending = null;
+      this.streakShown = 0;
+      if (p) this.setStreak(p.count, p.target);
+      else this.streakPips.forEach((pip) => pip.classList.remove('wb-on'));
+    }, 800);
+  }
+
+  // ------------------------------------------------- bonus round (GDD §5b)
+
+  /** Bonus round HUD: timer instead of the probe count, power bar and streak pips hidden. */
+  setBonusMode(on: boolean): void {
+    this.hudLayer.classList.toggle('wb-bonus', on);
+  }
+
+  setBonusTime(seconds: number): void {
+    this.bonusTimeEl.textContent = String(Math.max(0, Math.ceil(seconds)));
+    this.bonusTimeEl.parentElement!.classList.toggle('wb-low', seconds <= 5);
+  }
+
+  showBonusResult(stardust: number): Promise<void> {
+    return this.showCard((resolve) => {
+      const card = document.createElement('div');
+      card.className = 'wb-card wb-glass';
+      card.innerHTML = `
+        <div class="wb-unlock-icon">${icon('stardust')}</div>
+        <div class="wb-card-title">${escapeHtml(S.bonusComplete)}</div>
+        <div class="wb-card-sub">${escapeHtml(S.bonusStardust)}</div>
+        <div class="wb-stardust-earn">${icon('stardust')}<span class="wb-num-fast" data-earn>0</span></div>
+        <button class="wb-btn-primary" type="button" data-primary>${escapeHtml(S.continueLabel)}</button>
+      `;
+      const earnEl = card.querySelector('[data-earn]') as HTMLElement;
+      window.setTimeout(() => countUp(earnEl, 0, stardust, 900), 260);
+      (card.querySelector('[data-primary]') as HTMLButtonElement).addEventListener('click', () => resolve());
+      haptic('medium');
+      return card;
+    });
+  }
+
+  // ----------------------------------------------------------- banner
+
+  /** A short centered banner (level-size label, bonus-round start); `hot` gives it the orange-red "Extreme" accent. */
+  showBanner(top: string, main: string, hot = false, ms = 1600): void {
+    this.bannerEl.querySelector('[data-banner-top]')!.textContent = top;
+    this.bannerEl.querySelector('[data-banner-main]')!.textContent = main;
+    this.bannerEl.classList.toggle('wb-hot', hot);
+    this.bannerEl.classList.remove('wb-show');
+    void this.bannerEl.offsetWidth;
+    this.bannerEl.classList.add('wb-show');
+    window.clearTimeout(this.bannerTimer);
+    this.bannerTimer = window.setTimeout(() => this.bannerEl.classList.remove('wb-show'), ms);
   }
 
   // ------------------------------------------------------------ power bar

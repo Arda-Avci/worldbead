@@ -29,7 +29,8 @@ type IconName =
   | 'chevron'
   | 'ship'
   | 'snowflake'
-  | 'rock';
+  | 'rock'
+  | 'streak';
 
 function svg(inner: string, viewBox = '0 0 24 24'): string {
   // stroke-width defaults to 0 at the root so shapes that don't set their own
@@ -131,6 +132,9 @@ const ICONS: Record<IconName, string> = {
   rock: svg(
     '<path d="M4.5 14.2 7 7.4l5.2-3.4 5.6 2.6 2.2 6.2-3.4 5.2-6.6.9z" fill="none" stroke-width="1.7" stroke-linejoin="round"/>' +
       '<path d="M12.2 4 11 10.4l3.4 2.6M11 10.4 7 12.6" fill="none" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>',
+  ),
+  streak: svg(
+    '<path d="M13.4 2.5 5.5 13.2h5.3l-1.2 8.3 8.9-11.6h-5.6z"/>',
   ),
   ship: svg(
     '<path d="M2.5 14.5c1.8 2.2 5.4 3.6 9.5 3.6s7.7-1.4 9.5-3.6c-1.8-1.1-5.4-1.8-9.5-1.8s-7.7.7-9.5 1.8z"/>' +
