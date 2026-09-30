@@ -4,8 +4,9 @@ export type PowerId = 'meteor' | 'prism' | 'solarFlare' | 'comet';
 
 import { FIRST_CLOUD_LEVEL } from './levels';
 import { INVASION_FIRST_LEVEL } from './invasion';
+import { SATELLITE_FIRST_LEVEL } from './satellites';
 
-export type UnlockId = 'fire' | 'rotate' | 'swap' | PowerId | 'cloudLayer' | 'newPlanet' | 'newLayer' | 'cloudDrift' | 'invasion';
+export type UnlockId = 'fire' | 'rotate' | 'swap' | PowerId | 'cloudLayer' | 'newPlanet' | 'newLayer' | 'cloudDrift' | 'invasion' | 'satellite';
 
 export interface UnlockEntry {
   level: number;
@@ -30,6 +31,8 @@ export const UNLOCKS: UnlockEntry[] = [
   // is the last) and well past the last blocking tutorial (cloudDrift at 33), so the player has
   // the full toolkit and a calm stretch before this new difficulty axis appears.
   { level: INVASION_FIRST_LEVEL, id: 'invasion', tutorial: 'invasion' },
+  // Real satellites (GDD §5b): first guaranteed pass, forced tutorial where the player catches it.
+  { level: SATELLITE_FIRST_LEVEL, id: 'satellite', tutorial: 'satellite' },
   // 'newPlanet' is no longer a fixed level here: with the planet rotating every
   // 10 levels (item #15) it's shown dynamically in `Game.ts` at the start of
   // every planet slot after the first, keyed per-level like everything else.

@@ -27,4 +27,6 @@ export type SfxName =
   | 'laserFire'
   | 'fireCrackle'
   | 'extinguish'
-  | 'shipExplode';
+  | 'shipExplode'
+  // Real satellites (src/game/satellites.ts).
+  | 'satelliteCatch';

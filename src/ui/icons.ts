@@ -27,7 +27,8 @@ type IconName =
   | 'check'
   | 'hand'
   | 'chevron'
-  | 'ship';
+  | 'ship'
+  | 'satellite';
 
 function svg(inner: string, viewBox = '0 0 24 24'): string {
   // stroke-width defaults to 0 at the root so shapes that don't set their own
@@ -124,6 +125,12 @@ const ICONS: Record<IconName, string> = {
     '<path d="M2.5 14.5c1.8 2.2 5.4 3.6 9.5 3.6s7.7-1.4 9.5-3.6c-1.8-1.1-5.4-1.8-9.5-1.8s-7.7.7-9.5 1.8z"/>' +
       '<path d="M9 12.8c0-2.6 1.3-4.6 3-4.6s3 2 3 4.6" fill="none" stroke-width="1.6" stroke-linecap="round"/>' +
       '<circle cx="12" cy="16" r="1.3" fill="#0b0f1e"/>',
+  ),
+  satellite: svg(
+    '<rect x="9.5" y="9.5" width="5" height="5" rx="0.8" transform="rotate(45 12 12)"/>' +
+      '<rect x="2.5" y="10.6" width="5.6" height="2.8" rx="0.4" transform="rotate(-45 5.3 12)"/>' +
+      '<rect x="15.9" y="10.6" width="5.6" height="2.8" rx="0.4" transform="rotate(-45 18.7 12)"/>' +
+      '<path d="M5 19.5a9 9 0 0 0 6-1.2" fill="none" stroke-width="1.5" stroke-linecap="round"/>',
   ),
 };
 

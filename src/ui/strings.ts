@@ -112,6 +112,7 @@ export const S = {
     autoSpin: pick('The World Turns', 'Dünya Dönüyor'),
     cloudDrift: pick('Drifting Clouds', 'Sürüklenen Bulutlar'),
     invasion: pick('Alien Invasion', 'Uzaylı İstilası'),
+    satellite: pick('Real Satellites!', 'Gerçek Uydular!'),
   },
   unlockDescription: {
     swap: pick('Swap your current and next probe colors.', 'Aktif ve sıradaki mermi renklerini değiştir.'),
@@ -129,6 +130,7 @@ export const S = {
     autoSpin: pick('The globe now keeps turning on its own. Dragging still works — just push through it.', 'Küre artık kendi kendine dönmeye başladı. Sürüklemek hâlâ işe yarar — sadece biraz daha zorlanacaksın.'),
     cloudDrift: pick('These clouds now drift on their own, sliding over the beads and blocking shots until they move on — or you pop them.', 'Bu bulutlar artık kendi kendine sürükleniyor, boncukların üzerinde kayıyor ve geçene ya da onları patlatana kadar atışları engelliyor.'),
     invasion: pick('Alien ships can now appear. Tap a ship to destroy it before it fires — its laser sets beads on fire.', 'Artık uzaylı gemileri belirebilir. Ateş etmeden önce gemiye dokunarak yok et — lazeri boncukları ateşe verir.'),
+    satellite: pick('Real spacecraft now fly past the planet. Catch one to earn a reward!', 'Gerçek uzay araçları artık gezegenin önünden geçiyor. Yakala, ödül kazan!'),
   },
 
   // ------------------------------------------------------------ tutorial
@@ -148,7 +150,32 @@ export const S = {
     cometUse: pick('Swipe across the world.', 'Dünyanın üzerinde kaydır.'),
     cloudDrift: pick('Wait for a gap, or pop through the drifting clouds.', 'Bir boşluk bekle ya da sürüklenen bulutları patlatarak geç.'),
     invasionShip: pick('An alien ship is approaching — tap it to destroy it before it fires!', 'Bir uzaylı gemisi yaklaşıyor — ateş etmeden önce ona dokunarak yok et!'),
+    satellite: pick('A real satellite! Tap it to catch it.', 'Gerçek bir uydu! Yakalamak için dokun.'),
     invasionFire: pick('Its laser set part of the planet on fire. Look for a fire-colored probe to put it out.', 'Lazeri gezegenin bir bölümünü ateşe verdi. Söndürmek için ateş renkli bir mermi ara.'),
+  },
+  // Real satellites (GDD §5b): one real spacecraft per pass; each fact is about that actual mission.
+  satellite: {
+    names: {
+      iss: pick('International Space Station', 'Uluslararası Uzay İstasyonu'),
+      hubble: pick('Hubble Space Telescope', 'Hubble Uzay Teleskobu'),
+      lro: pick('Lunar Reconnaissance Orbiter', 'Lunar Reconnaissance Orbiter'),
+      mro: pick('Mars Reconnaissance Orbiter', 'Mars Reconnaissance Orbiter'),
+      marsExpress: pick('Mars Express', 'Mars Express'),
+      akatsuki: pick('Akatsuki', 'Akatsuki'),
+      juno: pick('Juno', 'Juno'),
+    },
+    facts: {
+      iss: pick('The ISS circles Earth about every 90 minutes, roughly 400 km up.', 'ISS, yaklaşık 400 km yükseklikte Dünya\'nın çevresini yaklaşık 90 dakikada bir dolanır.'),
+      hubble: pick('Hubble was launched in 1990 and is still observing the universe from orbit.', 'Hubble 1990\'da fırlatıldı ve hâlâ yörüngeden evreni gözlemliyor.'),
+      lro: pick('LRO has been mapping the Moon from orbit since 2009.', 'LRO, 2009\'dan beri Ay\'ı yörüngesinden haritalıyor.'),
+      mro: pick('MRO\'s HiRISE camera can make out objects about a metre across on Mars.', 'MRO\'nun HiRISE kamerası Mars\'ta yaklaşık bir metrelik nesneleri seçebilir.'),
+      marsExpress: pick('Mars Express, Europe\'s first Mars mission, has orbited the planet since 2003.', 'Avrupa\'nın ilk Mars görevi Mars Express, 2003\'ten beri gezegenin yörüngesinde.'),
+      akatsuki: pick('Akatsuki reached Venus orbit in 2015 on its second try.', 'Akatsuki, ikinci denemesinde 2015\'te Venüs yörüngesine ulaştı.'),
+      juno: pick('Juno arrived at Jupiter in 2016 and runs entirely on solar power.', 'Juno 2016\'da Jüpiter\'e ulaştı ve tamamen güneş enerjisiyle çalışıyor.'),
+    },
+    caught: (name: string, reward: string, fact: string) => pick(`${name} caught! ${reward}. ${fact}`, `${name} yakalandı! ${reward}. ${fact}`),
+    rewardStardust: (n: number) => pick(`+${n} stardust`, `+${n} yıldız tozu`),
+    rewardCharge: (power: string) => pick(`+1 free ${power}`, `+1 bedava ${power}`),
   },
   spinTiltNotice: pick('The world can now spin on tilted axes, not just side to side.', 'Dünya artık sadece yatay değil, eğik eksenlerde de dönebiliyor.'),
   spinReverseNotice: pick('The world may now reverse direction as it spins.', 'Dünya artık dönerken yön değiştirebiliyor.'),

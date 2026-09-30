@@ -34,6 +34,15 @@ import { PLANET_NAMES, POWER_NAMES, S } from '../ui/strings';
 import { invasionConfigForLevel, InvasionController, FIRE_COLOR, type InvasionEvent } from './invasion';
 import { AlienInvasionRenderer } from '../render/aliens';
 import { FireEmberSystem } from '../render/fireEmbers';
+import { SatelliteRenderer } from '../render/satellites';
+import {
+  SATELLITE_PASS_SECONDS,
+  SATELLITE_TUTORIAL_PASS_SECONDS,
+  satellitePassForLevel,
+  satelliteReward,
+  type SatelliteId,
+  type SatellitePass,
+} from './satellites';
 
 type FlowState = 'boot' | 'playing' | 'resolving';
 
@@ -76,10 +85,14 @@ const UNLOCK_INFO: Partial<Record<UnlockId, { icon: string; name: string; descri
   newLayer: { icon: 'star', name: S.unlockName.newLayer, description: S.unlockDescription.newLayer },
   cloudDrift: { icon: 'star', name: S.unlockName.cloudDrift, description: S.unlockDescription.cloudDrift },
   invasion: { icon: 'ship', name: S.unlockName.invasion, description: S.unlockDescription.invasion },
+  satellite: { icon: 'satellite', name: S.unlockName.satellite, description: S.unlockDescription.satellite },
 };
 
 /** Generous, phone-friendly hit radius (world units) a tap must land within to destroy a ship — see `AlienInvasionRenderer`'s own copy for the raycast test itself; kept here too for the tutorial's spotlight sizing. */
 const SHIP_HIT_RADIUS = 0.2;
+
+/** Minimum screen-space tap radius (px) for catching a satellite — it moves, so this is deliberately generous. */
+const SATELLITE_HIT_PX = 40;
 
 // ---- Alien invasion approach-path helper (item #1/#2), copied verbatim from `src/render/aliens-demo.ts` ----
 // per `docs/INVASION_INTEGRATION.md`; needs nothing demo-specific.
@@ -167,6 +180,17 @@ export class Game {
   private lastFireCrackleAt = -10;
   private pendingInvasionResolve: (() => void) | null = null;
 
+  // real satellites (see `src/game/satellites.ts`)
+  private readonly satellites = new SatelliteRenderer();
+  /** This level's planned pass, or null (no pass, or satellites disabled for this level kind — only `buildLevel` arms it). */
+  private satPass: SatellitePass | null = null;
+  private satElapsed = 0;
+  private satLaunched = false;
+  /** True while the level's unlock cards/tutorials run: the pass timer waits, so nothing flies behind a blocking card. */
+  private tutorialBusy = false;
+  private satRestartIn = 0;
+  private pendingSatelliteResolve: (() => void) | null = null;
+
   private state: FlowState = 'boot';
   private acceptInput = false;
   private armedPower: PowerId | null = null;
@@ -213,6 +237,7 @@ export class Game {
     // parent every level's `BeadGlobe.group` is added to — see `prepareLevel`) so they track the
     // globe's spin/drag exactly like the beads they rise from.
     this.scene.scene.add(this.aliens.group);
+    this.scene.scene.add(this.satellites.group);
     this.scene.spin.add(this.fireEmbers.object);
 
     this.progress = loadProgress();
@@ -247,6 +272,12 @@ export class Game {
         targetForCurrentProbe: () => this.qaTargetForCurrentProbe(),
         targetsForCurrentProbe: (n: number) => this.qaTargetsForCurrentProbe(n),
         queueState: () => (this.session ? { queue: [...this.session.queue], probes: this.session.probes, probesTotal: this.session.probesTotal, prismArmed: this.session.prismArmed, isOver: this.session.isOver } : null),
+        // QA-only: real-satellite hooks (screen position for real taps, forced craft, pure plan lookup).
+        satelliteState: () => ({ planned: this.satPass?.id ?? null, active: this.satellites.active, screen: this.satelliteScreen(), stardust: this.progress.stardust, charges: { ...this.progress.powerCharges } }),
+        forceSatellite: (id: SatelliteId, slow = false, seconds?: number) => this.qaForceSatellite(id, slow, seconds),
+        // QA-only: software-rendered headless browsers run at ~1 fps (game time is dt-clamped), so a pass is fast-forwarded by stepping the renderer.
+        satelliteAdvance: (seconds: number) => this.satellites.update(seconds),
+        satellitePlan: (level: number, planet: PlanetId) => satellitePassForLevel(level, planet),
         regionsCount: () => this.globe?.countRegions() ?? null,
         regionsPerShell: () => this.globe?.countRegionsPerShell() ?? null,
         aliveBreakdown: () => this.qaAliveBreakdown(),
@@ -575,6 +606,10 @@ export class Game {
     const invasionCfg = invasionConfigForLevel(cfg.level);
     if (invasionCfg) this.invasion = new InvasionController(globe, invasionCfg);
 
+    // Real satellites: the one place a pass is planned. Skip this call for any level kind that must
+    // have none (e.g. a bonus round) and no satellite will ever be scheduled or started.
+    this.armSatellite(cfg.level, cfg.planet);
+
     this.scene.configureSpin(cfg.seed, cfg.autoSpinEnabled, (cfg.level - 1) / (MAX_LEVEL - 1), cfg.spinTiltEnabled, cfg.spinReverseEnabled);
     this.orientToStart(cfg);
     this.updateHud();
@@ -611,6 +646,7 @@ export class Game {
   // =============================================================== unlocks & tutorials
 
   private async runTutorialsForLevel(): Promise<void> {
+    this.tutorialBusy = true;
     try {
       await this.runTutorialsForLevelInner();
     } catch (e) {
@@ -619,6 +655,8 @@ export class Game {
       // linger forever — that is an expected control-flow signal, not an error: the
       // level is already over, so just stop showing tutorials.
       if (!isTutorialAborted(e)) throw e;
+    } finally {
+      this.tutorialBusy = false;
     }
   }
 
@@ -816,6 +854,16 @@ export class Game {
         if (this.invasion?.isFireActive()) this.ui.showToast(S.tutorial.invasionFire);
         break;
       }
+      case 'satellite': {
+        // The tutorial pass is slower so it is catchable; `updateSatellite` relaunches it if it
+        // leaves uncaught, and the step only ends on a real catch (tap-forwarded through the spotlight).
+        const until = new Promise<void>((res) => (this.pendingSatelliteResolve = res));
+        this.satLaunched = true;
+        this.startSatellite(true);
+        await this.tutorial.run([{ caption: S.tutorial.satellite, target: () => this.satelliteCircle(), gesture: 'tap', until }]);
+        this.pendingSatelliteResolve = null;
+        break;
+      }
     }
   }
 
@@ -908,6 +956,13 @@ export class Game {
 
   private handleGlobeTap(clientX: number, clientY: number): void {
     if (!this.session || !this.globe) return;
+
+    // Satellites before everything else (GDD §5b): a generous screen-space test, free of probes.
+    const satScreen = this.satelliteScreen();
+    if (satScreen && Math.hypot(clientX - satScreen.x, clientY - satScreen.y) <= Math.max(SATELLITE_HIT_PX, satScreen.r)) {
+      this.catchSatellite();
+      return;
+    }
 
     // Ships before beads (item #4): a generous, phone-friendly hit test (distance-to-ray, not the
     // ship's actual small silhouette — see `AlienInvasionRenderer.raycastShips`) runs first and, on
@@ -1632,10 +1687,117 @@ export class Game {
       // Bead animations are absolute-time-based; let them catch up in one jump after a stalled frame.
       this.globe?.update(Math.min(rawDt, 2));
       this.updateInvasion(dt);
+      this.updateSatellite(dt);
       this.scene.render();
       requestAnimationFrame(loop);
     };
     requestAnimationFrame(loop);
+  }
+
+  // =============================================================== real satellites
+
+  private armSatellite(level: number, planet: PlanetId): void {
+    this.satellites.reset();
+    this.satPass = satellitePassForLevel(level, planet);
+    this.satElapsed = 0;
+    this.satLaunched = false;
+    this.satRestartIn = 0;
+  }
+
+  private startSatellite(slow: boolean, secondsOverride?: number): void {
+    if (!this.satPass || !this.globe) return;
+    const r = this.globe.outerRadius();
+    this.satellites.start(this.satPass.id, {
+      orbitRadius: r * 1.6,
+      globeDiameter: r * 2,
+      seconds: secondsOverride ?? (slow ? SATELLITE_TUTORIAL_PASS_SECONDS : SATELLITE_PASS_SECONDS),
+      tilt: this.satPass.tilt,
+      dir: this.satPass.dir,
+    });
+  }
+
+  /** Runs the pass timer (only while the level is actually being played and no card/tutorial blocks) and animates the craft; stops it the moment the level ends. */
+  private updateSatellite(dt: number): void {
+    this.satellites.update(dt);
+    if (this.state !== 'playing') {
+      if (this.satellites.group.visible) this.satellites.reset();
+      return;
+    }
+    if (!this.satPass) return;
+    if (this.pendingSatelliteResolve) {
+      // forced tutorial: keep offering a slow pass until the player catches one
+      if (!this.satellites.group.visible) {
+        this.satRestartIn -= dt;
+        if (this.satRestartIn <= 0) {
+          this.startSatellite(true);
+          this.satRestartIn = 1.2;
+        }
+      }
+      return;
+    }
+    if (this.satLaunched || this.tutorialBusy) return;
+    this.satElapsed += dt;
+    if (this.satElapsed >= this.satPass.delay) {
+      this.satLaunched = true;
+      this.startSatellite(false);
+    }
+  }
+
+  /** The craft's screen position and on-screen half-size in px, or null when none is flying. */
+  private satelliteScreen(): { x: number; y: number; r: number } | null {
+    const pos = this.satellites.worldPosition();
+    if (!pos) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    const ndc = pos.clone().project(this.scene.camera);
+    if (ndc.z > 1) return null;
+    const x = (ndc.x * 0.5 + 0.5) * rect.width + rect.left;
+    const y = (1 - (ndc.y * 0.5 + 0.5)) * rect.height + rect.top;
+    const right = new THREE.Vector3().setFromMatrixColumn(this.scene.camera.matrixWorld, 0);
+    const e = pos.clone().addScaledVector(right, this.satellites.span / 2).project(this.scene.camera);
+    const r = Math.abs((e.x * 0.5 + 0.5) * rect.width + rect.left - x);
+    return { x, y, r };
+  }
+
+  private satelliteCircle(): ScreenCircle | null {
+    const sc = this.satelliteScreen();
+    return sc ? { x: sc.x, y: sc.y, r: Math.max(50, sc.r * 1.3) } : null;
+  }
+
+  private catchSatellite(): void {
+    const pos = this.satellites.worldPosition();
+    const pass = this.satPass;
+    if (!pos || !pass || !this.session) return;
+    this.scene.burst(pos.clone(), 0xbfe4ff, 1.3);
+    this.scene.burst(pos.clone(), 0xffd98a, 1.0);
+    this.satellites.catchNow();
+    this.audio.play('satelliteCatch');
+    haptic('medium');
+    const unlocked = POWER_IDS.filter((p) => this.progress.powerUnlocked[p]);
+    const reward = satelliteReward(pass, unlocked);
+    let rewardText: string;
+    if (reward.kind === 'stardust') {
+      this.session.stardust += reward.amount;
+      rewardText = S.satellite.rewardStardust(reward.amount);
+    } else {
+      this.session.powers[reward.power].charges += 1;
+      rewardText = S.satellite.rewardCharge(powerLabel(reward.power));
+    }
+    this.syncProgressFromSession();
+    this.updateHud();
+    this.updatePowerButtons();
+    this.ui.showToast(S.satellite.caught(S.satellite.names[pass.id], rewardText, S.satellite.facts[pass.id]), 5200);
+    if (this.pendingSatelliteResolve) {
+      const r = this.pendingSatelliteResolve;
+      this.pendingSatelliteResolve = null;
+      r();
+    }
+  }
+
+  /** Dev-only (QA hook): start a pass of `id` right now, bypassing the plan/roll, so any craft can be screenshotted. */
+  private qaForceSatellite(id: SatelliteId, slow: boolean, seconds?: number): void {
+    this.satPass = { id, delay: 0, tilt: 0.45, dir: 1, rewardRoll: 0.9, powerRoll: 0.3 };
+    this.satLaunched = true;
+    this.startSatellite(slow, seconds);
   }
 
   // =============================================================== alien invasion
