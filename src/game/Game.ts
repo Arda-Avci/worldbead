@@ -299,6 +299,7 @@ export class Game {
         regionsCount: () => this.globe?.countRegions() ?? null,
         regionsPerShell: () => this.globe?.countRegionsPerShell() ?? null,
         aliveBreakdown: () => this.qaAliveBreakdown(),
+        exposedColorList: () => (this.globe ? [...this.globe.exposedColors()] : []),
         grazingCloudHitTest: () => this.qaGrazingCloudHitTest(),
         grazingHitTestAllShells: () => this.qaGrazingHitTestAllShells(),
         fireAtCurrentProbeDirect: () => this.qaFireAtCurrentProbeDirect(),

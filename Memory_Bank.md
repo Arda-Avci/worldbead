@@ -2386,3 +2386,9 @@ Built by three parallel worktree agents, merged by the orchestrator.
   vs surface-tone (white cloud bead tapped while probe is a white surface tone).
 - Verified headless: L21 (2 layers) cleared in 5 shots, hidden layer beads freed
   (layer 136→0 after a surface pop); L41 (clouds) and L100 (3 layers) play with no errors.
+
+- Follow-up 2026-10-01 (owner: "check again"): measured exposed palettes live
+  (`__wbQA.exposedColorList`): pale pairs differ by only ΔE 10–16 (ffffff vs
+  d7dee8 = 13 at L8, f0e7d4 vs e1cdb1 = 11 at L41) yet look identical on the
+  glossy beads. `colorMatch.ts` now uses ΔE 5 generally and ΔE 15 when both
+  colors have Lab L > 78 (`PALE_DELTA_E`).

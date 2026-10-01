@@ -5,6 +5,13 @@
  * an exact-hex compare rejects it. Two colors closer than `SAME_COLOR_DELTA_E` (CIE76) count as one.
  */
 export const SAME_COLOR_DELTA_E = 5;
+/**
+ * Pale colors (both Lab L above `PALE_L`) are lit almost to white on the glossy beads and are
+ * indistinguishable by eye at much larger distances (measured live: ffffff vs d7dee8 = ΔE 13,
+ * f0e7d4 vs e1cdb1 = ΔE 11), so they get a wider window.
+ */
+export const PALE_DELTA_E = 15;
+const PALE_L = 78;
 
 function lab(hex: number): [number, number, number] {
   const lin = (v: number) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
@@ -19,5 +26,6 @@ function lab(hex: number): [number, number, number] {
 export function colorsMatch(a: number, b: number): boolean {
   if (a === b) return true;
   const la = lab(a), lb = lab(b);
-  return Math.hypot(la[0] - lb[0], la[1] - lb[1], la[2] - lb[2]) < SAME_COLOR_DELTA_E;
+  const limit = la[0] > PALE_L && lb[0] > PALE_L ? PALE_DELTA_E : SAME_COLOR_DELTA_E;
+  return Math.hypot(la[0] - lb[0], la[1] - lb[1], la[2] - lb[2]) < limit;
 }
